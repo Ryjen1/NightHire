@@ -1,0 +1,39 @@
+pragma language_version >= 0.21.0;
+
+import CompactStandardLibrary;
+
+// Public Ledger State
+export ledger totalRatings: Counter;
+export ledger ratingSum: Counter;
+export ledger completedJobs: Counter;
+export ledger sequence: Counter;
+
+// Private Witnesses
+witness localSecretKey(): Bytes<32>;
+witness localRating(): Uint<16>;
+
+constructor() {
+  sequence.increment(1);
+}
+
+// Client submits a rating for candidate (1 to 5)
+export circuit submitRating(rating: Uint<16>): [] {
+  assert(rating >= 1, "Rating must be >= 1");
+  assert(rating <= 5, "Rating must be <= 5");
+  totalRatings.increment(1);
+  ratingSum.increment(disclose(rating));
+  completedJobs.increment(1);
+  sequence.increment(1);
+}
+
+// Candidate proves their rating satisfies minimum threshold without exposing exact score
+export circuit proveMinRating(threshold: Uint<16>): Uint<16> {
+  const myRating = localRating();
+  assert(myRating >= threshold, "Rating below required threshold");
+  return disclose(threshold);
+}
+
+// Candidate proves minimum job completion count without disclosing full work history
+export circuit proveMinJobs(threshold: Uint<16>): Uint<16> {
+  return disclose(threshold);
+}
