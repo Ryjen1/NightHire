@@ -7,7 +7,8 @@
   "workspaces": [
     "boilerplate/contract",
     "boilerplate/contract-cli",
-    "boilerplate/scripts"
+    "boilerplate/scripts",
+    "frontend"
   ],
   "scripts": {
     "dev": "rm -rf boilerplate/contract/src/managed/* && node boilerplate/scripts/auto-generator.js",
