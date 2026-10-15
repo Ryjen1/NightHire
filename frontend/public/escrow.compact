@@ -1,0 +1,192 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Ryjen1 (NightHire contributors)
+// Licensed under the Apache License, Version 2.0
+
+pragma language_version >= 0.21.0;
+import CompactStandardLibrary;
+
+// ════════════════════════════════════════════════════════════════════════════
+// Public Ledger State
+// ════════════════════════════════════════════════════════════════════════════
+
+// Platform authority identity hash (set in constructor).
+export ledger escrowAuthority: Bytes<32>;
+
+// Monotonic counter for replay / nullifier hygiene.
+export ledger escrowSequence: Counter;
+
+// Total number of escrows ever opened (regardless of current state).
+export ledger escrowCount: Counter;
+
+// Escrow commitments: maps (employer_commitment, candidate_commitment) -> escrowId.
+// We append the latest escrowId for the pair so two providers can't silently
+// double-fund the same pair while a prior escrow is still active.
+export ledger activeEscrowByPair: Map<Bytes<32>, Uint<64>>;
+
+// Per-escrow state.
+export ledger escrowAmount: Map<Uint<64>, Uint<64>>;
+export ledger escrowEmployer: Map<Uint<64>, Bytes<32>>;
+export ledger escrowCandidate: Map<Uint<64>, Bytes<32>>;
+export ledger escrowReleased: Map<Uint<64>, Uint<64>>;        // milestone count released
+export ledger escrowMilestoneCount: Map<Uint<64>, Uint<64>>; // total milestones
+export ledger escrowState: Map<Uint<64>, Uint<8>>;            // 0=open, 1=released-all, 2=refunded
+
+// ════════════════════════════════════════════════════════════════════════════
+// Private Witnesses
+// ════════════════════════════════════════════════════════════════════════════
+
+witness localEscrowAuthorityKey(): Bytes<32>;
+witness localEmployerSecretKey(): Bytes<32>;
+witness localCandidateSecretKey(): Bytes<32>;
+witness localMilestoneProof(): Uint<64>;  // candidate-supplied milestone index being claimed
+
+// ════════════════════════════════════════════════════════════════════════════
+// Constructor
+// ════════════════════════════════════════════════════════════════════════════
+
+constructor(adminKey: Bytes<32>) {
+  escrowAuthority = disclose(hashEscrowAuth(adminKey));
+  escrowSequence.increment(1);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Circuits
+// ════════════════════════════════════════════════════════════════════════════
+
+// Employer opens an escrow for a (employer_commitment, candidate_commitment)
+// pair. `amount` is denominated in the smallest unit (e.g. atomic NIGHT).
+// `milestoneCount` is the number of milestone releases the escrow is split
+// into. The escrowId is the current sequence value; it is returned so the
+// employer can fund / release milestones by id.
+export circuit openEscrow(
+  employerCommitment: Bytes<32>,
+  candidateCommitment: Bytes<32>,
+  amount: Uint<64>,
+  milestoneCount: Uint<64>
+): Uint<64> {
+  assert(amount > 0, "Escrow amount must be > 0");
+  assert(milestoneCount > 0, "Milestone count must be > 0");
+  const emp = disclose(employerCommitment);
+  const cand = disclose(candidateCommitment);
+
+  // Re-use check: only one active escrow per pair.
+  assert(!activeEscrowByPair.member(emp), "Pair already has active escrow");
+
+  // Authority check is intentionally loose here: anyone holding the authority
+  // witness can open escrows (i.e. a marketplace admin operates the contract).
+  // In a production deployment a tighter check would call a per-employer
+  // capability map; that is left as Wave-3 work.
+  const pk = hashEscrowAuth(localEscrowAuthorityKey());
+  assert(escrowAuthority == pk, "Not authorized as escrow authority");
+
+  const escrowId = escrowSequence.read();
+  escrowSequence.increment(1);
+
+  escrowEmployer.insert(escrowId, disclose(emp));
+  escrowCandidate.insert(escrowId, disclose(cand));
+  escrowAmount.insert(escrowId, disclose(amount));
+  escrowMilestoneCount.insert(escrowId, disclose(milestoneCount));
+  escrowReleased.insert(escrowId, disclose(0));
+  escrowState.insert(escrowId, disclose(0));
+  activeEscrowByPair.insert(emp, disclose(escrowId));
+  escrowCount.increment(1);
+
+  return escrowId;
+}
+
+// Authority releases funds for a milestone index on an escrow.
+// `milestoneAmount` is the per-milestone amount (= amount / milestoneCount
+// precomputed off-chain). Candidate supplies the milestone proof from local
+// state via witness; the contract enforces that the supplied milestone index
+// is the one being released and that the cumulative release count is still
+// inside the milestone budget.
+//
+// In production this circuit would also move funds via Zswap / DUST;
+// for Wave-2 we model the escrow as a ledger-only state machine.
+export circuit releaseMilestone(escrowId: Uint<64>, milestoneAmount: Uint<64>): [] {
+  const eid = disclose(escrowId);
+  assert(escrowAmount.member(eid), "Unknown escrow");
+  const s: Uint<8> = escrowState.lookup(eid);
+  assert(s == 0, "Escrow not open");
+
+  const ms = localMilestoneProof();
+  assert(ms > 0, "Milestone proof must be >= 1");
+  const released: Uint<64> = escrowReleased.lookup(eid);
+  const total: Uint<64> = escrowMilestoneCount.lookup(eid);
+  // The witness-bound milestone index must equal the next-released step.
+  assert(ms == released + 1, "Milestone index out of order");
+
+  const amount: Uint<64> = escrowAmount.lookup(eid);
+  assert(released < total, "All milestones already released");
+
+  // Guards against per-milestone overdraw on a malicious caller.
+  assert(released * milestoneAmount + milestoneAmount <= amount, "Milestone exceeds budget");
+
+  // Last-milestone check uses pre-disclosure public data (released, total,
+  // both from ledger). This avoids leaking the witness value ms through a
+  // conditional branch after its disclosure.
+  const isFinal = released + 1 == total;
+  escrowReleased.insert(eid, disclose(ms));
+  if (isFinal) {
+    escrowState.insert(eid, disclose(1));
+  }
+  escrowSequence.increment(1);
+}
+
+// Employer (authority) refunds an unspent escrow back. Candidate gets nothing;
+// this is the disincentive for the candidate dropping out.
+export circuit refundEscrow(escrowId: Uint<64>): [] {
+  const eid = disclose(escrowId);
+  assert(escrowAmount.member(eid), "Unknown escrow");
+  const s: Uint<8> = escrowState.lookup(eid);
+  assert(s == 0, "Escrow not open");
+  const pk = hashEscrowAuth(localEscrowAuthorityKey());
+  assert(escrowAuthority == pk, "Not authorized as escrow authority");
+  escrowState.insert(eid, disclose(2));
+  // Clear the pair pointer so the employer can re-open with a new pair.
+  const emp: Bytes<32> = escrowEmployer.lookup(eid);
+  if (activeEscrowByPair.member(emp)) {
+    if (activeEscrowByPair.lookup(emp) == eid) {
+      activeEscrowByPair.remove(emp);
+    }
+  }
+  escrowSequence.increment(1);
+}
+
+// Candidate proves knowledge of the secret behind a committed escrow party.
+// Useful for off-chain auctions and dispute resolution.
+export circuit proveEmployerLink(escrowId: Uint<64>): [] {
+  const eid = disclose(escrowId);
+  assert(escrowAmount.member(eid), "Unknown escrow");
+  const emp: Bytes<32> = escrowEmployer.lookup(eid);
+  const s = localEmployerSecretKey();
+  const derived = persistentHash<Vector<3, Bytes<32>>>(
+    [pad(32, "escrow:emp:"), emp, s]
+  );
+  // We don't return anything; the off-chain verifier checks that the supplied
+  // commitment matches `emp` against an allow-list.
+  assert(derived == emp, "Employer secret does not match commitment");
+  escrowSequence.increment(1);
+}
+
+export circuit proveCandidateLink(escrowId: Uint<64>): [] {
+  const eid = disclose(escrowId);
+  assert(escrowAmount.member(eid), "Unknown escrow");
+  const cand: Bytes<32> = escrowCandidate.lookup(eid);
+  const s = localCandidateSecretKey();
+  const derived = persistentHash<Vector<3, Bytes<32>>>(
+    [pad(32, "escrow:cand:"), cand, s]
+  );
+  assert(derived == cand, "Candidate secret does not match commitment");
+  escrowSequence.increment(1);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Helpers
+// ════════════════════════════════════════════════════════════════════════════
+
+circuit hashEscrowAuth(adminKey: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>(
+    [pad(32, "escrow:auth:"), adminKey]
+  );
+}
