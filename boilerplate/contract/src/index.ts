@@ -1,22 +1,14 @@
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Ryjen1 (NightHire contributors)
+// Licensed under the Apache License, Version 2.0
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Re-export the compiled NightHire contract module and all witness helpers.
+export * from "./witnesses.js";
 
-const [compactFile] = fs.readdirSync(__dirname).filter(f => f.endsWith(".compact"));
-
-if (!compactFile) throw new Error("No .compact file found in current directory");
-
-const contractBaseName = path.basename(compactFile, ".compact"); 
-const contractNameCapitalized = contractBaseName[0].toUpperCase() + contractBaseName.slice(1);
-
-const contractPath = `./managed/${contractBaseName}/contract/index.cjs`;
-const contractModule = await import(contractPath);
-
-export * from "./witnesses";
+import * as NightHireModule from "./managed/nighthire/contract/index.js";
 
 export const contracts = {
-  [contractNameCapitalized]: contractModule
+  NightHire: NightHireModule,
 };
+
+export const NightHire = NightHireModule;
