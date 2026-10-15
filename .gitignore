@@ -34,3 +34,4 @@ coverage/
 .nyc_output/
 boilerplate/contract-cli/reports/
 boilerplate/contract-cli/dist/
+boilerplate/contract/dist/
