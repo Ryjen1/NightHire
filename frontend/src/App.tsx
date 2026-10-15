@@ -1,5 +1,8 @@
-import { useState } from 'react';
-import confetti from 'canvas-confetti';
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Ryjen1 (NightHire contributors)
+// Licensed under the Apache License, Version 2.0
+
+import { useCallback, useEffect, useState } from 'react';
 import {
   Shield,
   CheckCircle2,
@@ -8,829 +11,771 @@ import {
   Briefcase,
   UserCheck,
   Building2,
-  ArrowRight,
-  Sparkles,
   Key,
   Database,
   Search,
-  Check,
   Award,
   Layers,
   FileCheck2,
-  RefreshCw
+  RefreshCw,
+  Trash2,
+  Plus,
+  Lock,
+  FlaskConical,
 } from 'lucide-react';
+import confetti from 'canvas-confetti';
+import {
+  NightHireRuntime,
+  loadPrivateState,
+  savePrivateState,
+  clearPrivateState,
+  newAuthorityKey,
+  newCandidateState,
+  bytesToHex,
+  hexToBytes,
+  type NightHirePrivateState,
+  type AuthorityPrivateState,
+  type CandidatePrivateState,
+} from './services/nightHire';
 
-interface Credential {
-  id: string;
-  name: string;
-  category: string;
-  trustLevel: 1 | 2 | 3;
-  source: string;
-  privateDetail: string;
-  provenClaim: string;
-  verified: boolean;
+type Tab = 'overview' | 'candidate' | 'authority' | 'employer' | 'escrow' | 'ledger' | 'source';
+
+interface CircuitLog {
+  readonly id: string;
+  readonly circuit: string;
+  readonly args: string[];
+  readonly result: unknown;
+  readonly durationMs: number;
+  readonly txId: string;
+  readonly ok: boolean;
+  readonly error?: string;
 }
+
+const isAuthority = (p: NightHirePrivateState | null): p is { role: 'authority'; state: AuthorityPrivateState } =>
+  !!p && p.role === 'authority';
+
+const isCandidate = (p: NightHirePrivateState | null): p is { role: 'candidate'; state: CandidatePrivateState } =>
+  !!p && p.role === 'candidate';
 
 export function App() {
-  const [activeTab, setActiveTab] = useState<'overview' | 'candidate' | 'employer' | 'playground' | 'contract'>('overview');
-  
-  // Wallet State
-  const [walletAddress] = useState('mn1q9k48z6wxe2p8t7uy320nmkd83jfv8x73l4q2');
-  const [tDUSTBalance] = useState('420.50 tDUST');
-  
-  // Candidate State
-  const [candidateSecretKey] = useState('sk_midnight_0x8f3c71a9b24e6015d8');
-  const [candidateCommitment] = useState('0x4e29b183a00c87d4f91e73998bce3621dfa9783c48324f9e61280bfa');
-  const [minRatingThreshold, setMinRatingThreshold] = useState<number>(4);
-  const [minJobsThreshold, setMinJobsThreshold] = useState<number>(15);
-  const [isProving, setIsProving] = useState(false);
-  const [provingStep, setProvingStep] = useState(0);
-  const [generatedProof, setGeneratedProof] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>('overview');
 
-  // Employer Requirements State
-  const [reqMinRating, setReqMinRating] = useState(4);
-  const [reqMinJobs, setReqMinJobs] = useState(10);
-  const [verifiedCandidateId, setVerifiedCandidateId] = useState<string | null>(null);
+  const [runtime] = useState(() => new NightHireRuntime());
+  const [deployed, setDeployed] = useState(false);
+  const [ledger, setLedger] = useState(() => runtime.ledger());
 
-  // Contract Ledger State (Live / Simulated Midnight State)
-  const [ledgerState, setLedgerState] = useState({
-    candidateCount: 48,
-    totalRatings: 186,
-    ratingSum: 892,
-    completedJobs: 186,
-    sequence: 235,
-    authority: '0x01a9df83271894b8304918239019283019283019283019283019283019283019',
-  });
+  const [privateState, setPrivateState] = useState<NightHirePrivateState | null>(() => loadPrivateState());
+  const [logs, setLogs] = useState<CircuitLog[]>([]);
 
-  const credentials: Credential[] = [
-    {
-      id: 'cred-1',
-      name: 'Midnight Smart Contract Engineer',
-      category: 'Skill & Architecture',
-      trustLevel: 3,
-      source: 'Midnight Network Foundation',
-      privateDetail: 'Completed Certified Compact Developer Program (#MID-8849)',
-      provenClaim: 'Level 3 Verified Compact & ZK Circuit Author',
-      verified: true
-    },
-    {
-      id: 'cred-2',
-      name: 'Top 5% GitHub Web3 Contributor',
-      category: 'Code History',
-      trustLevel: 2,
-      source: 'OAuth Linked (github.com/privdev-99)',
-      privateDetail: '1,420 Commits across 8 DeFi / ZK Repositories in 2025-2026',
-      provenClaim: 'Active High-Impact Open Source Contributor',
-      verified: true
-    },
-    {
-      id: 'cred-3',
-      name: 'Average Rating: 4.8 / 5.0 Stars',
-      category: 'Reputation Score',
-      trustLevel: 3,
-      source: 'NightHire On-Chain Escrow Protocol',
-      privateDetail: 'Rated by 34 Clients (Avg: 4.88 ★ over 38 milestones)',
-      provenClaim: 'Proven Rating ≥ 4.0 ★ (Selective Disclosure)',
-      verified: true
-    },
-    {
-      id: 'cred-4',
-      name: 'Compensation Range $120k – $160k',
-      category: 'Compensation Band',
-      trustLevel: 1,
-      source: 'Self-Attested Candidate Preference',
-      privateDetail: 'Current baseline: $145,000 / year + equity',
-      provenClaim: 'Fits within $120k+ Senior Engineering Band',
-      verified: true
-    }
-  ];
+  // Refresh ledger display whenever a circuit returns.
+  const appendLog = useCallback((log: CircuitLog) => {
+    setLogs((prev) => [log, ...prev].slice(0, 30));
+  }, []);
 
-  const handleGenerateProof = () => {
-    setIsProving(true);
-    setProvingStep(1);
-    setGeneratedProof(null);
+  // Re-read the ledger from the runtime (cheap; in-memory copy).
+  const refreshLedger = useCallback(() => setLedger(runtime.ledger()), [runtime]);
 
-    setTimeout(() => setProvingStep(2), 700);
-    setTimeout(() => setProvingStep(3), 1500);
-    setTimeout(() => {
-      setProvingStep(4);
-      setIsProving(false);
-      const proofHash = `zkProof_nighthire_v1_${Math.random().toString(16).slice(2, 10)}${Math.random().toString(16).slice(2, 10)}`;
-      setGeneratedProof(proofHash);
-      confetti({
-        particleCount: 50,
-        spread: 60,
-        origin: { y: 0.8 }
+  // ── Deploy (constructor) ──────────────────────────────────────────────────
+  const handleDeploy = useCallback(async () => {
+    if (!isAuthority(privateState)) return;
+    try {
+      const r = await runtime.deploy(privateState.state.adminKey, privateState);
+      setDeployed(true);
+      setLedger(r.ledger);
+      appendLog({
+        id: r.txId,
+        circuit: 'constructor(adminKey)',
+        args: [bytesToHex(privateState.state.adminKey).slice(0, 12) + '…'],
+        result: bytesToHex(r.result),
+        durationMs: r.durationMs,
+        txId: r.txId,
+        ok: true,
       });
-    }, 2400);
+    } catch (e) {
+      appendLog({
+        id: crypto.randomUUID(),
+        circuit: 'constructor(adminKey)',
+        args: [],
+        result: null,
+        durationMs: 0,
+        txId: '0'.repeat(64),
+        ok: false,
+        error: (e as Error).message,
+      });
+    }
+  }, [privateState, runtime, appendLog]);
+
+  // ── Circuit dispatch ─────────────────────────────────────────────────────
+  const callCircuit = useCallback(
+    async (name: string, args: any[]) => {
+      if (!privateState) throw new Error('No private state — generate authority or candidate first.');
+      const t0 = performance.now();
+      try {
+        const r = await runtime.call(name, args, privateState);
+        refreshLedger();
+        appendLog({
+          id: r.txId,
+          circuit: name,
+          args: args.map(a => (a instanceof Uint8Array ? bytesToHex(a).slice(0, 10) + '…' : String(a))),
+          result: typeof r.result === 'bigint' ? r.result.toString() : r.result,
+          durationMs: r.durationMs,
+          txId: r.txId,
+          ok: true,
+        });
+        confetti({ particleCount: 30, spread: 50, origin: { y: 0.7 } });
+        return r;
+      } catch (e) {
+        const err = (e as Error).message;
+        appendLog({
+          id: crypto.randomUUID(),
+          circuit: name,
+          args: args.map(a => (a instanceof Uint8Array ? bytesToHex(a).slice(0, 10) + '…' : String(a))),
+          result: null,
+          durationMs: performance.now() - t0,
+          txId: '0'.repeat(64),
+          ok: false,
+          error: err,
+        });
+        throw e;
+      }
+    },
+    [privateState, runtime, refreshLedger, appendLog]
+  );
+
+  // ── State management helpers ──────────────────────────────────────────────
+  const generateAuthority = () => {
+    const adminKey = newAuthorityKey();
+    const ps: NightHirePrivateState = { role: 'authority', state: adminKey };
+    setPrivateState(ps);
+    savePrivateState(ps);
+  };
+  const generateCandidate = () => {
+    const st = newCandidateState();
+    const ps: NightHirePrivateState = { role: 'candidate', state: st };
+    setPrivateState(ps);
+    savePrivateState(ps);
+  };
+  const resetAll = () => {
+    clearPrivateState();
+    setPrivateState(null);
+    setLogs([]);
+    setDeployed(false);
   };
 
-  const handleVerifyEmployerProof = (id: string) => {
-    setVerifiedCandidateId(id);
-    confetti({
-      particleCount: 80,
-      spread: 70,
-      origin: { y: 0.6 }
-    });
-  };
-
+  // ── UI ──────────────────────────────────────────────────────────────────
   return (
     <div className="app-container">
-      {/* Top Navigation */}
       <header className="navbar">
-        <a href="#home" className="brand-logo" onClick={() => setActiveTab('overview')}>
-          <img src="/assets/logo.png" alt="NightHire" style={{ width: '38px', height: '38px', borderRadius: '10px', objectFit: 'cover' }} />
+        <a href="#home" className="brand-logo" onClick={() => setTab('overview')}>
+          <img src="/assets/logo.png" alt="NightHire" style={{ width: 38, height: 38, borderRadius: 10, objectFit: 'cover' }} />
           <span>Night<span style={{ color: 'var(--accent-purple-light)' }}>Hire</span></span>
-          <span style={{ 
-            fontSize: '0.7rem', 
-            background: 'rgba(139,92,246,0.18)', 
-            border: '1px solid var(--border-active)', 
-            padding: '2px 8px', 
-            borderRadius: '9999px',
+          <span style={{
+            fontSize: '0.7rem',
+            background: 'rgba(139,92,246,0.18)',
+            border: '1px solid var(--border-active)',
+            padding: '2px 8px',
+            borderRadius: 9999,
             color: 'var(--accent-purple-light)',
-            fontWeight: 600
+            marginLeft: 12,
           }}>
-            MIDNIGHT WAVE 1 MVP
+            🌑 Midnight Buildathon · Wave 2
           </span>
         </a>
-
         <nav className="nav-links">
-          <button 
-            className={`nav-tab ${activeTab === 'overview' ? 'active' : ''}`}
-            onClick={() => setActiveTab('overview')}
-          >
-            <Briefcase size={16} /> Overview
-          </button>
-          <button 
-            className={`nav-tab ${activeTab === 'candidate' ? 'active' : ''}`}
-            onClick={() => setActiveTab('candidate')}
-          >
-            <UserCheck size={16} /> Candidate Portal
-          </button>
-          <button 
-            className={`nav-tab ${activeTab === 'employer' ? 'active' : ''}`}
-            onClick={() => setActiveTab('employer')}
-          >
-            <Building2 size={16} /> Employer View
-          </button>
-          <button 
-            className={`nav-tab ${activeTab === 'playground' ? 'active' : ''}`}
-            onClick={() => setActiveTab('playground')}
-          >
-            <Zap size={16} /> ZK Playground
-          </button>
-          <button 
-            className={`nav-tab ${activeTab === 'contract' ? 'active' : ''}`}
-            onClick={() => setActiveTab('contract')}
-          >
-            <Database size={16} /> Protocol Ledger
-          </button>
+          <NavLink active={tab==='overview'}  onClick={() => setTab('overview')}  icon={<Layers/>}>Overview</NavLink>
+          <NavLink active={tab==='candidate'} onClick={() => setTab('candidate')} icon={<UserCheck/>}>Candidate</NavLink>
+          <NavLink active={tab==='authority'} onClick={() => setTab('authority')} icon={<Shield/>}>Authority</NavLink>
+          <NavLink active={tab==='employer'}  onClick={() => setTab('employer')}  icon={<Building2/>}>Employer</NavLink>
+          <NavLink active={tab==='escrow'}    onClick={() => setTab('escrow')}    icon={<Briefcase/>}>Escrow</NavLink>
+          <NavLink active={tab==='ledger'}    onClick={() => setTab('ledger')}    icon={<Database/>}>Ledger</NavLink>
+          <NavLink active={tab==='source'}    onClick={() => setTab('source')}    icon={<FileCheck2/>}>Contract</NavLink>
         </nav>
-
-        <div className="wallet-badge">
-          <div className="wallet-status-dot"></div>
-          <span>{walletAddress.slice(0, 8)}...{walletAddress.slice(-4)}</span>
-          <span style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>{tDUSTBalance}</span>
-        </div>
       </header>
 
-      {/* OVERVIEW TAB */}
-      {activeTab === 'overview' && (
-        <div>
-          <section className="hero">
-            <div className="badge-tag">
-              <Sparkles size={14} /> Zero-Knowledge Progressive Disclosure
-            </div>
-            <h1 className="hero-title">
-              Apply without your current <br />
-              <span className="gradient-text">employer finding out.</span>
-            </h1>
-            <p className="hero-subtitle">
-              Prove you meet exact technical bars, experience thresholds, and verified ratings using 
-              Midnight ZK circuits — without handing over your identity, employer name, or full history until <b>you</b> choose.
-            </p>
-            <div style={{ display: 'flex', gap: '14px', justifyContent: 'center', flexWrap: 'wrap' }}>
-              <button className="btn btn-primary" onClick={() => setActiveTab('candidate')}>
-                Launch Candidate Hub <ArrowRight size={18} />
-              </button>
-              <button className="btn btn-secondary" onClick={() => setActiveTab('employer')}>
-                <Building2 size={18} /> For Employers: Post & Filter
-              </button>
-              <button className="btn btn-emerald" onClick={() => setActiveTab('playground')}>
-                <Zap size={18} /> Live Circuit Simulator
-              </button>
-            </div>
-          </section>
-
-          {/* 10-Second Before / After Comparison */}
-          <div style={{ marginTop: '20px' }}>
-            <div style={{ textAlign: 'center', marginBottom: '16px' }}>
-              <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.8rem' }}>
-                The 10-Second Difference
-              </h2>
-              <p style={{ color: 'var(--text-secondary)' }}>
-                Traditional job applications leak your entire digital footprint before you even get an interview.
-              </p>
-            </div>
-
-            <div className="comparison-section">
-              {/* Bad: Traditional */}
-              <div className="compare-card bad">
-                <div className="card-header-badge bad">
-                  <AlertTriangle size={14} /> TRADITIONAL HIRING (HIGH RISK)
-                </div>
-                <h3 className="compare-title">Complete Doxxing on Application</h3>
-                <div className="item-list">
-                  <div className="item-row">
-                    <span>Full Legal Name & Photo</span>
-                    <span className="privacy-badge danger">Public / Unprotected</span>
-                  </div>
-                  <div className="item-row">
-                    <span>Current Employer & Job Title</span>
-                    <span className="privacy-badge danger">Boss Can Discover</span>
-                  </div>
-                  <div className="item-row">
-                    <span>Salary History & Target</span>
-                    <span className="privacy-badge danger">Anchors Negotiation</span>
-                  </div>
-                  <div className="item-row">
-                    <span>Home Address, Phone & Email</span>
-                    <span className="privacy-badge danger">Scraped & Stored in ATS</span>
-                  </div>
-                  <div className="item-row">
-                    <span>Resume Skill Claims</span>
-                    <span className="privacy-badge danger">Unverified PDF text</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Good: NightHire */}
-              <div className="compare-card good">
-                <div className="card-header-badge good">
-                  <CheckCircle2 size={14} /> NIGHTHIRE PROTOCOL (PROGRESSIVE DISCLOSURE)
-                </div>
-                <h3 className="compare-title">Cryptographic Proof Without Identity Leaks</h3>
-                <div className="item-list">
-                  <div className="item-row">
-                    <span>Candidate Identity & PII</span>
-                    <span className="privacy-badge private">🔒 Private on Device</span>
-                  </div>
-                  <div className="item-row">
-                    <span>Verified Skill & Experience</span>
-                    <span className="privacy-badge proven">🛡️ ZK Proven (Midnight Circuit)</span>
-                  </div>
-                  <div className="item-row">
-                    <span>Verified Rating Threshold</span>
-                    <span className="privacy-badge proven">🛡️ Discloses: "≥ 4.0 ★"</span>
-                  </div>
-                  <div className="item-row">
-                    <span>Salary Band Eligibility</span>
-                    <span className="privacy-badge proven">🛡️ Discloses: "Within Band"</span>
-                  </div>
-                  <div className="item-row">
-                    <span>Full Identity Reveal</span>
-                    <span className="privacy-badge disclosed">👁️ Mutual Shortlist Only</span>
-                  </div>
-                </div>
-              </div>
-            </div>
+      {!privateState && (
+        <section className="glass-card" style={{ marginTop: 20 }}>
+          <h2 className="card-title">
+            <FlaskConical size={26} color="var(--accent-purple-light)" />
+            Choose your role
+          </h2>
+          <p className="card-subtitle">
+            NightHire's privacy model requires each role to hold different private keys.
+            Pick the role you want to demo; the keys live only in your browser (localStorage).
+          </p>
+          <div className="grid-2" style={{ marginTop: 16 }}>
+            <button className="btn btn-primary" onClick={generateAuthority}>
+              <Shield size={18} /> I am the Authority (register candidates, issue credentials)
+            </button>
+            <button className="btn btn-secondary" onClick={generateCandidate}>
+              <UserCheck size={18} /> I am a Candidate (prove ratings, salary band, jurisdiction)
+            </button>
           </div>
-
-          {/* Value Pillars */}
-          <div className="grid-3" style={{ margin: '30px 0' }}>
-            <div className="glass-card">
-              <div style={{ color: 'var(--accent-purple)', marginBottom: '12px' }}>
-                <Key size={32} />
-              </div>
-              <h4 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.2rem', marginBottom: '8px' }}>
-                1. Multi-Tier Trust Levels
-              </h4>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                Support for self-attestations, OAuth linked profiles (GitHub, LinkedIn), and third-party cryptographic issuer certificates.
-              </p>
-            </div>
-
-            <div className="glass-card">
-              <div style={{ color: 'var(--accent-cyan)', marginBottom: '12px' }}>
-                <Layers size={32} />
-              </div>
-              <h4 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.2rem', marginBottom: '8px' }}>
-                2. Selective Disclosure Circuits
-              </h4>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                Compact smart contracts compute zero-knowledge mathematical proofs: reveal "I have 4.8+ rating" without revealing client identities.
-              </p>
-            </div>
-
-            <div className="glass-card">
-              <div style={{ color: 'var(--accent-emerald)', marginBottom: '12px' }}>
-                <Building2 size={32} />
-              </div>
-              <h4 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.2rem', marginBottom: '8px' }}>
-                3. High-Signal Employer Tools
-              </h4>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                Employers filter by cryptographic proof constraints, eliminating fake resumes while attracting top currently-employed talent.
-              </p>
-            </div>
-          </div>
-        </div>
+          <p style={{ marginTop: 12, color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+            <Lock size={14}/> &nbsp; All values are generated in-browser with <code>crypto.getRandomValues</code> and never sent anywhere. This page runs the real Compact contract directly via <code>@midnight-ntwrk/compact-runtime</code>.
+          </p>
+        </section>
       )}
 
-      {/* CANDIDATE PORTAL */}
-      {activeTab === 'candidate' && (
-        <div>
-          <div className="glass-card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
-              <div>
-                <h2 className="card-title">
-                  <UserCheck size={26} color="var(--accent-purple-light)" /> Candidate Privacy Command Center
-                </h2>
-                <p className="card-subtitle">
-                  Manage your private credential vault, choose disclosure thresholds, and generate verifiable Midnight proofs.
-                </p>
-              </div>
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <span className="trust-badge level-3">
-                  <Award size={14} /> Level 3 Verified Issuer
-                </span>
-                <span className="privacy-badge proven">
-                  <Shield size={14} /> Proof Engine Ready
-                </span>
-              </div>
-            </div>
-
-            {/* Secret Key & Commitment Bar */}
-            <div style={{ background: '#090912', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-subtle)', marginBottom: '24px' }}>
-              <div className="grid-2">
-                <div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
-                    LOCAL SECRET WITNESS (Stays exclusively in your browser):
-                  </div>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', color: '#a78bfa' }}>
-                    {candidateSecretKey}
-                  </div>
-                </div>
-                <div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
-                    ON-CHAIN REGISTRATION COMMITMENT (Stored in Compact Ledger):
-                  </div>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', color: 'var(--accent-cyan)' }}>
-                    {candidateCommitment.slice(0, 24)}...
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Credential List */}
-            <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.2rem', marginBottom: '14px' }}>
-              Your Credential Vault & Attestation Sources
-            </h3>
-            <div className="item-list" style={{ marginBottom: '30px' }}>
-              {credentials.map(c => (
-                <div key={c.id} style={{ 
-                  background: 'rgba(255,255,255,0.02)', 
-                  border: '1px solid var(--border-subtle)', 
-                  borderRadius: '12px', 
-                  padding: '16px' 
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <FileCheck2 size={18} color="var(--accent-purple-light)" />
-                      <strong style={{ fontSize: '1.05rem' }}>{c.name}</strong>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>• {c.category}</span>
-                    </div>
-                    <div>
-                      {c.trustLevel === 3 && (
-                        <span className="trust-badge level-3">
-                          <Check size={12} /> Level 3: Third-Party Verified ({c.source})
-                        </span>
-                      )}
-                      {c.trustLevel === 2 && (
-                        <span className="trust-badge level-2">
-                          <Check size={12} /> Level 2: Linked Account ({c.source})
-                        </span>
-                      )}
-                      {c.trustLevel === 1 && (
-                        <span className="trust-badge level-1">
-                          Level 1: Self-Attested ({c.source})
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="grid-2" style={{ fontSize: '0.85rem', background: 'rgba(0,0,0,0.2)', padding: '10px 14px', borderRadius: '8px' }}>
-                    <div>
-                      <span style={{ color: 'var(--text-muted)' }}>🔒 Raw Private Data: </span>
-                      <span style={{ color: '#cbd5e1' }}>{c.privateDetail}</span>
-                    </div>
-                    <div>
-                      <span style={{ color: 'var(--accent-emerald)' }}>🛡️ Disclosed Claim: </span>
-                      <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{c.provenClaim}</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Proof Generator Controls */}
-            <div style={{ 
-              background: 'linear-gradient(180deg, rgba(139,92,246,0.08) 0%, rgba(14,14,26,0.8) 100%)',
-              border: '1px solid var(--border-active)',
-              borderRadius: '16px',
-              padding: '24px'
-            }}>
-              <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.25rem', marginBottom: '8px' }}>
-                Generate Zero-Knowledge Qualification Proof
-              </h3>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '20px' }}>
-                Select the minimum criteria to prove for an employer. The Midnight Compact circuit verifies your private witnesses against on-chain state without disclosing the raw values.
-              </p>
-
-              <div className="grid-2" style={{ marginBottom: '20px' }}>
-                <div className="form-group">
-                  <label className="form-label">Minimum Verified Rating Threshold (1 - 5 ★)</label>
-                  <select 
-                    className="form-select"
-                    value={minRatingThreshold}
-                    onChange={(e) => setMinRatingThreshold(Number(e.target.value))}
-                  >
-                    <option value={3}>Prove Rating ≥ 3.0 Stars</option>
-                    <option value={4}>Prove Rating ≥ 4.0 Stars (Senior Bar)</option>
-                    <option value={5}>Prove Rating ≥ 4.5 Stars (Elite Bar)</option>
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Minimum Completed Milestones / Jobs</label>
-                  <select 
-                    className="form-select"
-                    value={minJobsThreshold}
-                    onChange={(e) => setMinJobsThreshold(Number(e.target.value))}
-                  >
-                    <option value={5}>Prove ≥ 5 Verified Projects</option>
-                    <option value={10}>Prove ≥ 10 Verified Projects</option>
-                    <option value={15}>Prove ≥ 15 Verified Projects</option>
-                  </select>
-                </div>
-              </div>
-
-              {isProving && (
-                <div style={{ marginBottom: '20px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '6px' }}>
-                    <span style={{ color: 'var(--accent-purple-light)' }}>
-                      {provingStep === 1 && '1. Extracting private witness data from local storage...'}
-                      {provingStep === 2 && '2. Binding Compact constraints & sequence replay guards...'}
-                      {provingStep === 3 && '3. Evaluating Midnight ZK Proof Provider...'}
-                      {provingStep === 4 && '4. Finalizing zero-knowledge attestation token...'}
-                    </span>
-                    <span style={{ fontFamily: 'var(--font-mono)' }}>{provingStep * 25}%</span>
-                  </div>
-                  <div className="progress-bar-container">
-                    <div className="progress-bar-fill" style={{ width: `${provingStep * 25}%` }}></div>
-                  </div>
-                </div>
-              )}
-
-              <button 
-                className="btn btn-primary" 
-                onClick={handleGenerateProof}
-                disabled={isProving}
-                style={{ width: '100%', padding: '14px' }}
-              >
-                {isProving ? (
-                  <>
-                    <RefreshCw size={18} className="pulse-glow" /> Synthesizing ZK Circuit Proof...
-                  </>
-                ) : (
-                  <>
-                    <Zap size={18} /> Generate Verifiable ZK Proof Token
-                  </>
-                )}
+      {privateState && (
+        <section className="glass-card" style={{ marginTop: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap' }}>
+          <div>
+            <strong style={{ color: 'var(--accent-cyan)' }}>Role:</strong>{' '}
+            <span style={{ textTransform: 'uppercase' }}>{privateState.role}</span>
+            {isAuthority(privateState) && (
+              <span style={{ marginLeft: 12, color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                adminKey 0x…{bytesToHex(privateState.state.adminKey).slice(-8)}
+              </span>
+            )}
+            {isCandidate(privateState) && (
+              <span style={{ marginLeft: 12, color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                secretKey 0x…{bytesToHex(privateState.state.secretKey).slice(-8)} · rating {privateState.state.rating.toString()} · jobs {privateState.state.completedJobs.toString()}
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {!deployed && isAuthority(privateState) && (
+              <button className="btn btn-primary" onClick={handleDeploy}>
+                <Zap size={16}/> Deploy contract (constructor)
               </button>
-
-              {generatedProof && (
-                <div style={{ marginTop: '20px', background: 'rgba(16,185,129,0.08)', border: '1px solid var(--accent-emerald)', borderRadius: '12px', padding: '18px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-emerald)', fontWeight: 600, marginBottom: '8px' }}>
-                    <CheckCircle2 size={18} /> Zero-Knowledge Proof Generated Successfully!
-                  </div>
-                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '10px' }}>
-                    This cryptographic proof can be verified by any employer contract on Midnight without revealing your identity or full history:
-                  </p>
-                  <div className="code-box">
-                    {`Proof Token: ${generatedProof}\nCircuit: reputation.compact -> proveMinRating(${minRatingThreshold}), proveMinJobs(${minJobsThreshold})\nWitness Commitment: ${candidateCommitment}\nVerification Status: VALID (Zero PII Disclosed)`}
-                  </div>
-                </div>
-              )}
-            </div>
+            )}
+            {deployed && <span style={{ color: 'var(--accent-emerald)', fontSize: '0.85rem' }}>✓ contract initialised · authority stored</span>}
+            <button className="btn btn-ghost" onClick={resetAll}>
+              <Trash2 size={14}/> Reset
+            </button>
           </div>
-        </div>
+        </section>
       )}
 
-      {/* EMPLOYER VIEW */}
-      {activeTab === 'employer' && (
-        <div>
-          <div className="glass-card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
-              <div>
-                <h2 className="card-title">
-                  <Building2 size={26} color="var(--accent-cyan)" /> Employer High-Signal Talent Pipeline
-                </h2>
-                <p className="card-subtitle">
-                  Set provable cryptographic requirements. Only review candidates who have mathematically proven their qualifications.
-                </p>
-              </div>
-              <div>
-                <span className="privacy-badge proven">
-                  <CheckCircle2 size={14} /> Zero Resume Spam
-                </span>
-              </div>
-            </div>
+      {/* TAB: OVERVIEW */}
+      {tab === 'overview' && <OverviewScreen deployed={deployed} ledger={ledger} />}
 
-            {/* Aggregate Talent Pool Stats */}
-            <div className="grid-3" style={{ margin: '20px 0 28px' }}>
-              <div className="stat-pill">
-                <div className="stat-value">48</div>
-                <div className="stat-label">Verified Candidates in Pool</div>
-              </div>
-              <div className="stat-pill">
-                <div className="stat-value">4.76 ★</div>
-                <div className="stat-label">Average On-Chain Rating</div>
-              </div>
-              <div className="stat-pill">
-                <div className="stat-value">100%</div>
-                <div className="stat-label">Zero PII Leaked During Screening</div>
-              </div>
-            </div>
-
-            {/* Provable Requirements Filter */}
-            <div style={{ background: 'rgba(255,255,255,0.02)', padding: '20px', borderRadius: '14px', border: '1px solid var(--border-subtle)', marginBottom: '28px' }}>
-              <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.15rem', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Search size={18} color="var(--accent-purple-light)" /> Set Provable Role Requirements
-              </h3>
-              <div className="grid-2">
-                <div className="form-group">
-                  <label className="form-label">Required Minimum Rating</label>
-                  <select 
-                    className="form-select"
-                    value={reqMinRating}
-                    onChange={(e) => setReqMinRating(Number(e.target.value))}
-                  >
-                    <option value={3}>Min 3.0+ Stars</option>
-                    <option value={4}>Min 4.0+ Stars (Senior Standard)</option>
-                    <option value={5}>Min 4.8+ Stars (Top 5%)</option>
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Required Verified Projects / Jobs</label>
-                  <select 
-                    className="form-select"
-                    value={reqMinJobs}
-                    onChange={(e) => setReqMinJobs(Number(e.target.value))}
-                  >
-                    <option value={5}>Min 5+ Completed Milestones</option>
-                    <option value={10}>Min 10+ Completed Milestones</option>
-                    <option value={20}>Min 20+ Completed Milestones</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {/* Candidate Applications */}
-            <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.2rem', marginBottom: '16px' }}>
-              Verified Candidate Applications (Cryptographically Screened)
-            </h3>
-
-            <div className="item-list">
-              {[
-                {
-                  id: 'cand-1',
-                  pseudo: 'Candidate #8849-ZK',
-                  skills: ['Midnight Compact', 'ZK Circuits', 'TypeScript', 'Rust'],
-                  claimedRating: 'Proven ≥ 4.0 ★ (Actual 4.88 ★)',
-                  claimedJobs: 'Proven ≥ 15 Jobs (Actual 38)',
-                  trustScore: 'Level 3 Third-Party Attestation',
-                  appliedDate: '2 hours ago'
-                },
-                {
-                  id: 'cand-2',
-                  pseudo: 'Candidate #4012-PRO',
-                  skills: ['React', 'Next.js', 'Web3 Architecture', 'Ethers.js'],
-                  claimedRating: 'Proven ≥ 4.0 ★ (Actual 4.70 ★)',
-                  claimedJobs: 'Proven ≥ 10 Jobs (Actual 24)',
-                  trustScore: 'Level 2 GitHub OAuth Verified',
-                  appliedDate: 'Yesterday'
-                },
-                {
-                  id: 'cand-3',
-                  pseudo: 'Candidate #9123-ENG',
-                  skills: ['Solidity', 'Smart Contract Auditing', 'DeFi'],
-                  claimedRating: 'Proven ≥ 4.5 ★ (Actual 4.95 ★)',
-                  claimedJobs: 'Proven ≥ 20 Jobs (Actual 52)',
-                  trustScore: 'Level 3 Institutional Attestation',
-                  appliedDate: '3 days ago'
-                }
-              ].map(cand => (
-                <div key={cand.id} style={{ 
-                  background: 'var(--bg-tertiary)', 
-                  border: verifiedCandidateId === cand.id ? '1px solid var(--accent-emerald)' : '1px solid var(--border-subtle)', 
-                  borderRadius: '14px', 
-                  padding: '20px' 
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '14px' }}>
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <strong style={{ fontSize: '1.15rem', color: '#ffffff' }}>{cand.pseudo}</strong>
-                        <span className="trust-badge level-3">{cand.trustScore}</span>
-                      </div>
-                      <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                        Applied {cand.appliedDate} • Zero PII Disclosed to Protect Current Employment
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '10px' }}>
-                      {verifiedCandidateId === cand.id ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-emerald)', fontWeight: 600, fontSize: '0.9rem' }}>
-                          <CheckCircle2 size={18} /> ZK Proof Verified On-Chain!
-                        </div>
-                      ) : (
-                        <button 
-                          className="btn btn-primary"
-                          style={{ padding: '8px 16px', fontSize: '0.85rem' }}
-                          onClick={() => handleVerifyEmployerProof(cand.id)}
-                        >
-                          <Shield size={14} /> Verify ZK Circuit Proof
-                        </button>
-                      )}
-                      <button 
-                        className="btn btn-secondary"
-                        style={{ padding: '8px 16px', fontSize: '0.85rem' }}
-                        onClick={() => alert(`Mutual Interest Initiated with ${cand.pseudo}! Progressive disclosure invitation sent.`)}
-                      >
-                        Request Identity Disclosure
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="grid-3" style={{ fontSize: '0.85rem', background: 'rgba(0,0,0,0.3)', padding: '12px 16px', borderRadius: '10px' }}>
-                    <div>
-                      <span style={{ color: 'var(--text-muted)' }}>Verified Skills: </span>
-                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '4px' }}>
-                        {cand.skills.map(s => (
-                          <span key={s} style={{ background: 'rgba(139,92,246,0.2)', color: 'var(--accent-purple-light)', padding: '2px 8px', borderRadius: '4px', fontSize: '0.75rem' }}>
-                            {s}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                    <div>
-                      <span style={{ color: 'var(--text-muted)' }}>Proven Rating: </span>
-                      <div style={{ color: 'var(--accent-emerald)', fontWeight: 600, marginTop: '4px' }}>
-                        {cand.claimedRating}
-                      </div>
-                    </div>
-                    <div>
-                      <span style={{ color: 'var(--text-muted)' }}>Proven Track Record: </span>
-                      <div style={{ color: 'var(--accent-cyan)', fontWeight: 600, marginTop: '4px' }}>
-                        {cand.claimedJobs}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
+      {/* TAB: CANDIDATE */}
+      {tab === 'candidate' && privateState && (
+        <CandidateScreen
+          ps={isCandidate(privateState) ? privateState.state : null}
+          deployed={deployed}
+          onCall={callCircuit}
+        />
       )}
 
-      {/* ZK PLAYGROUND TAB */}
-      {activeTab === 'playground' && (
-        <div>
-          <div className="glass-card">
-            <h2 className="card-title">
-              <Zap size={26} color="var(--accent-amber)" /> Interactive Midnight Circuit Playground
-            </h2>
-            <p className="card-subtitle">
-              Simulate how Compact's dual-ledger model verifies private constraints and performs explicit disclosure.
-            </p>
-
-            <div className="grid-2">
-              <div>
-                <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.1rem', marginBottom: '12px' }}>
-                  Compact Smart Contract Circuit:
-                </h3>
-                <div className="code-box" style={{ height: '360px' }}>
-{`// nighthire.compact
-pragma language_version >= 0.21.0;
-import CompactStandardLibrary;
-
-export ledger totalRatings: Counter;
-export ledger ratingSum: Counter;
-export ledger sequence: Counter;
-
-witness localSecretKey(): Bytes<32>;
-witness localRating(): Uint<16>;
-
-export circuit proveMinRating(threshold: Uint<16>): Uint<16> {
-  const myRating = localRating();
-  assert(myRating >= threshold, "Rating below threshold");
-  return disclose(threshold);
-}
-
-export circuit proveRegistered(): Bytes<32> {
-  const sk = localSecretKey();
-  const seq = sequence as Field as Bytes<32>;
-  return disclose(publicKey(sk, seq));
-}`}
-                </div>
-              </div>
-
-              <div>
-                <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.1rem', marginBottom: '12px' }}>
-                  Execution Sandbox & Prover Trace:
-                </h3>
-                <div style={{ background: '#090912', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-subtle)', height: '360px', overflowY: 'auto' }}>
-                  <div style={{ fontSize: '0.85rem', fontFamily: 'var(--font-mono)', lineHeight: '1.8' }}>
-                    <div style={{ color: 'var(--text-muted)' }}>[PROVER] Initializing Compact VM runtime v0.31.1...</div>
-                    <div style={{ color: 'var(--text-muted)' }}>[WITNESS] Querying private state store: \`localRating()\` = 5</div>
-                    <div style={{ color: 'var(--text-muted)' }}>[CIRCUIT] Evaluating assertion: 5 &gt;= {minRatingThreshold} -&gt; <span style={{ color: 'var(--accent-emerald)' }}>PASSED</span></div>
-                    <div style={{ color: 'var(--text-muted)' }}>[DISCLOSE] Disclosing public argument: {minRatingThreshold}</div>
-                    <div style={{ color: 'var(--accent-cyan)' }}>[LEDGER] Incrementing replay sequence counter +1</div>
-                    <div style={{ color: 'var(--accent-purple-light)' }}>[ZK-SNARK] Constraint degree k=13 satisfied (rows=4585)</div>
-                    <div style={{ color: 'var(--accent-emerald)', marginTop: '8px' }}>
-                      ✓ Proof Status: Valid &amp; Verifiable on Midnight Testnet
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+      {/* TAB: AUTHORITY */}
+      {tab === 'authority' && privateState && (
+        <AuthorityScreen
+          ps={isAuthority(privateState) ? privateState.state : null}
+          deployed={deployed}
+          onCall={callCircuit}
+        />
       )}
 
-      {/* CONTRACT STATUS TAB */}
-      {activeTab === 'contract' && (
-        <div>
-          <div className="glass-card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
-              <div>
-                <h2 className="card-title">
-                  <Database size={26} color="var(--accent-purple-light)" /> On-Chain Midnight Ledger State
-                </h2>
-                <p className="card-subtitle">
-                  Inspect the deployed Compact contract ledger variables on Midnight standalone/testnet network.
-                </p>
-              </div>
-              <button 
-                className="btn btn-secondary"
-                style={{ padding: '8px 16px', fontSize: '0.85rem' }}
-                onClick={() => setLedgerState(prev => ({ ...prev, sequence: prev.sequence + 1 }))}
-              >
-                <RefreshCw size={14} /> Refresh State
-              </button>
-            </div>
+      {/* TAB: EMPLOYER */}
+      {tab === 'employer' && <EmployerScreen deployed={deployed} ledger={ledger} onCall={callCircuit} ps={privateState} />}
 
-            <div className="grid-3" style={{ margin: '20px 0' }}>
-              <div className="stat-pill">
-                <div className="stat-value">{ledgerState.candidateCount}</div>
-                <div className="stat-label">Registered Candidates (candidateCount)</div>
-              </div>
-              <div className="stat-pill">
-                <div className="stat-value">{ledgerState.totalRatings}</div>
-                <div className="stat-label">Ratings Submitted (totalRatings)</div>
-              </div>
-              <div className="stat-pill">
-                <div className="stat-value">{ledgerState.sequence}</div>
-                <div className="stat-label">Replay Sequence (sequence)</div>
-              </div>
-            </div>
+      {/* TAB: ESCROW */}
+      {tab === 'escrow' && <EscrowScreen deployed={deployed} ps={privateState} onCall={callCircuit} />}
 
-            <div style={{ background: '#090912', padding: '20px', borderRadius: '14px', border: '1px solid var(--border-subtle)' }}>
-              <h4 style={{ fontFamily: 'var(--font-heading)', fontSize: '1rem', marginBottom: '12px', color: 'var(--accent-purple-light)' }}>
-                Contract Configuration & Authority Parameters:
-              </h4>
-              <div className="code-box">
-{`Contract Name: nighthire.compact
-Network ID: Midnight Testnet (ZSwap / Ledger Sync)
-Platform Authority Key: ${ledgerState.authority}
-Public Circuits:
-  • register(commitment: Bytes<32>): []
-  • proveRegistered(): Bytes<32>
-  • submitRating(rating: Uint<16>): []
-  • proveMinRating(threshold: Uint<16>): Uint<16>
-  • proveMinJobs(threshold: Uint<16>): Uint<16>`}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* TAB: LEDGER */}
+      {tab === 'ledger' && <LedgerScreen ledger={ledger} logs={logs} onRefresh={refreshLedger} />}
 
-      {/* Footer */}
-      <footer style={{ textAlign: 'center', padding: '30px 0 10px', color: 'var(--text-muted)', fontSize: '0.85rem', borderTop: '1px solid var(--border-subtle)' }}>
-        <p>NightHire Protocol • Built with Compact on Midnight Network • Wave 1 MVP Submission (2026)</p>
+      {/* TAB: SOURCE */}
+      {tab === 'source' && <ContractSourceScreen />}
+
+      <footer style={{ marginTop: 60, padding: '24px 0', borderTop: '1px solid var(--border-subtle)', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+        <p>
+          🌑 NightHire · Privacy-first progressive-disclosure hiring · Midnight Buildathon Wave 2 ·
+          Built on <code>nighthire.compact</code> + <code>escrow.compact</code> · Apache-2.0
+        </p>
       </footer>
     </div>
+  );
+}
+
+function NavLink({ active, onClick, icon, children }: { active: boolean; onClick: () => void; icon: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={'nav-link' + (active ? ' nav-link-active' : '')}
+    >
+      {icon}
+      <span>{children}</span>
+    </button>
+  );
+}
+
+// ─── OVERVIEW ───────────────────────────────────────────────────────────────
+
+function OverviewScreen({ deployed, ledger }: { deployed: boolean; ledger: any }) {
+  return (
+    <section className="grid-3" style={{ marginTop: 20 }}>
+      <div className="glass-card stat-pill">
+        <div className="stat-value">{ledger.candidateCount.toString()}</div>
+        <div className="stat-label">Registered Candidates (public)</div>
+      </div>
+      <div className="glass-card stat-pill">
+        <div className="stat-value">{ledger.totalRatings.toString()}</div>
+        <div className="stat-label">Ratings Submitted (public aggregate)</div>
+      </div>
+      <div className="glass-card stat-pill">
+        <div className="stat-value">{ledger.sequence.toString()}</div>
+        <div className="stat-label">Replay Sequence</div>
+      </div>
+
+      <div className="glass-card" style={{ gridColumn: 'span 3' }}>
+        <h2 className="card-title"><Award size={26} color="var(--accent-emerald)"/> How NightHire's privacy model works</h2>
+        <p>
+          Every check below is enforced inside the Compact contract's zero-knowledge circuit. The <em>private</em> column never
+          leaves the witness provider's machine; only the <em>public</em> column is written to the ledger.
+        </p>
+        <table className="privacy-table">
+          <thead>
+            <tr><th>Circuit</th><th>Witness (private)</th><th>Public output</th><th>Verified property</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>proveMinRating</td><td>localRating</td><td>threshold ≥ 4 ★</td><td>exact rating never leaks</td></tr>
+            <tr><td>proveMinJobs</td><td>localCompletedJobs</td><td>count ≥ threshold</td><td>exact count never leaks</td></tr>
+            <tr><td>proveRegistered</td><td>localSecretKey</td><td>registration token hash</td><td>identity stays anonymous</td></tr>
+            <tr><td>proveCredential</td><td>localCredentialId, localCredentialSalt</td><td>yes / no</td><td>credential id stays private</td></tr>
+            <tr><td>proveSalaryFits</td><td>localSalaryLower, localSalaryUpper</td><td>fits / doesn't fit</td><td>salary band stays private</td></tr>
+            <tr><td>proveJurisdiction</td><td>localJurisdictionHash</td><td>yes / no</td><td>jurisdiction name stays private</td></tr>
+          </tbody>
+        </table>
+        <p style={{ marginTop: 12, color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+          {deployed
+            ? <>✓ Contract initialised — every circuit above is callable from the Candidate / Authority / Employer tabs.</>
+            : <>Deploy the contract first (Authority tab → "Deploy contract").</>}
+        </p>
+      </div>
+    </section>
+  );
+}
+
+// ─── CANDIDATE ──────────────────────────────────────────────────────────────
+
+function CandidateScreen({
+  ps, deployed, onCall,
+}: { ps: CandidatePrivateState | null; deployed: boolean; onCall: (n: string, a: any[]) => Promise<any> }) {
+  const [threshold, setThreshold] = useState(4n);
+  const [jobLower, setJobLower] = useState(100_000n);
+  const [jobUpper, setJobUpper] = useState(180_000n);
+  const [salaryResult, setSalaryResult] = useState<string | null>(null);
+  const [registrationToken, setRegistrationToken] = useState<string | null>(null);
+
+  if (!ps) return <p style={{ color: 'var(--text-muted)' }}>Switch role to Candidate first.</p>;
+
+  return (
+    <section className="grid-2" style={{ marginTop: 20 }}>
+      <div className="glass-card">
+        <h2 className="card-title"><UserCheck/> Identity & credentials</h2>
+        <p className="card-subtitle">Run circuits that prove facts about you without revealing them.</p>
+
+        <button
+          className="btn btn-primary"
+          disabled={!deployed}
+          onClick={async () => {
+            try {
+              const r = await onCall('proveRegistered', []);
+              setRegistrationToken(typeof r.result === 'string' ? r.result : bytesToHex(r.result as Uint8Array));
+            } catch { /* logged */ }
+          }}
+        >
+          <Key size={16} /> proveRegistered (reg token hash)
+        </button>
+
+        {registrationToken && (
+          <pre style={{ marginTop: 10, padding: 10, background: '#0e0e1a', borderRadius: 8, fontSize: '0.75rem', color: 'var(--accent-cyan)' }}>
+            {registrationToken}
+          </pre>
+        )}
+      </div>
+
+      <div className="glass-card">
+        <h2 className="card-title"><Award/> Reputation thresholds (private)</h2>
+        <p className="card-subtitle">My rating = <strong>{ps.rating.toString()}</strong> · jobs = <strong>{ps.completedJobs.toString()}</strong> (kept private)</p>
+        <label>proveMinRating threshold:&nbsp;
+          <input type="number" min={1} max={5} value={Number(threshold)} onChange={(e) => setThreshold(BigInt(e.target.value))} style={{ width: 80, padding: '4px 8px', borderRadius: 6, background: '#1a1a2e', color: '#eee', border: '1px solid var(--border-active)' }} />
+        </label>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <button className="btn btn-secondary" disabled={!deployed} onClick={() => onCall('proveMinRating', [threshold]).catch(() => {})}>
+            ✓ Rating ≥ threshold
+          </button>
+          <button className="btn btn-secondary" disabled={!deployed} onClick={() => onCall('proveMinJobs', [10n]).catch(() => {})}>
+            ✓ Jobs ≥ 10
+          </button>
+        </div>
+        {threshold > ps.rating && (
+          <p style={{ color: 'var(--accent-warning)', fontSize: '0.8rem', marginTop: 8 }}>
+            <AlertTriangle size={14}/> threshold higher than your rating — circuit will reject (this is the privacy guarantee!).
+          </p>
+        )}
+      </div>
+
+      <div className="glass-card">
+        <h2 className="card-title"><Search/> Salary band overlap (private)</h2>
+        <p className="card-subtitle">My band: <strong>${ps.salaryLower.toString()}</strong> – <strong>${ps.salaryUpper.toString()}</strong> (kept private)</p>
+        <label>Job lower: <input type="number" value={Number(jobLower)} onChange={(e) => setJobLower(BigInt(e.target.value))} style={{ width: 120, padding: '4px 8px', borderRadius: 6, background: '#1a1a2e', color: '#eee', border: '1px solid var(--border-active)' }} /></label>
+        <label>Job upper: <input type="number" value={Number(jobUpper)} onChange={(e) => setJobUpper(BigInt(e.target.value))} style={{ width: 120, padding: '4px 8px', borderRadius: 6, background: '#1a1a2e', color: '#eee', border: '1px solid var(--border-active)', marginLeft: 8 }} /></label>
+        <div style={{ marginTop: 8 }}>
+          <button className="btn btn-secondary" disabled={!deployed} onClick={async () => {
+            try {
+              await onCall('proveSalaryFits', [jobLower, jobUpper]);
+              setSalaryResult('FITS');
+            } catch {
+              setSalaryResult('DOES NOT FIT');
+            }
+          }}>
+            ✓ Prove overlap
+          </button>
+        </div>
+        {salaryResult && (
+          <p style={{ marginTop: 8, color: salaryResult === 'FITS' ? 'var(--accent-emerald)' : 'var(--accent-warning)' }}>
+            {salaryResult}
+          </p>
+        )}
+      </div>
+
+      <div className="glass-card">
+        <h2 className="card-title"><CheckCircle2/> Credential + jurisdiction</h2>
+        <p className="card-subtitle">Prove possession of an attestation; prove you match the employer's jurisdiction allow-list.</p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-secondary" disabled={!deployed} onClick={() => onCall('proveCredential', []).catch(() => {})}>
+            ✓ I hold my Level-3 attestation
+          </button>
+          <button className="btn btn-secondary" disabled={!deployed} onClick={() => onCall('proveJurisdiction', [ps.jurisdictionHash]).catch(() => {})}>
+            ✓ My jurisdiction matches employer's allow-list
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── AUTHORITY ──────────────────────────────────────────────────────────────
+
+function AuthorityScreen({
+  ps, deployed, onCall,
+}: { ps: AuthorityPrivateState | null; deployed: boolean; onCall: (n: string, a: any[]) => Promise<any> }) {
+  const [commitmentHex, setCommitmentHex] = useState('');
+  const [ratingTarget, setRatingTarget] = useState('0x' + new Uint8Array(32).toString ? '' : '');
+
+  // Generate a fresh commitment for demo purposes.
+  const freshCommitment = () => {
+    const buf = new Uint8Array(32);
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) crypto.getRandomValues(buf);
+    setCommitmentHex('0x' + bytesToHex(buf));
+    setRatingTarget(bytesToHex(buf));
+  };
+
+  if (!ps) return <p style={{ color: 'var(--text-muted)' }}>Switch role to Authority first.</p>;
+
+  return (
+    <section className="grid-2" style={{ marginTop: 20 }}>
+      <div className="glass-card">
+        <h2 className="card-title"><Shield/> Register candidates</h2>
+        <p className="card-subtitle">
+          When a real-world candidate passes KYC, the platform authority registers their commitment on-chain.
+          The candidate then proves attributes against it without ever revealing who they are.
+        </p>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            placeholder="0x… commitment"
+            value={commitmentHex}
+            onChange={(e) => setCommitmentHex(e.target.value)}
+            style={{ flex: 1, padding: '8px 10px', borderRadius: 6, background: '#0e0e1a', color: '#eee', border: '1px solid var(--border-active)', fontFamily: 'monospace', fontSize: '0.85rem' }}
+          />
+          <button className="btn btn-secondary" onClick={freshCommitment}>
+            <RefreshCw size={14}/> Generate
+          </button>
+        </div>
+        <button
+          className="btn btn-primary"
+          style={{ marginTop: 10 }}
+          disabled={!deployed || !commitmentHex.startsWith('0x') || commitmentHex.length !== 66}
+          onClick={async () => {
+            try {
+              await onCall('register', [hexToBytes(commitmentHex.slice(2))]);
+            } catch { /* logged */ }
+          }}
+        >
+          <Plus size={14}/> register(commitment)
+        </button>
+      </div>
+
+      <div className="glass-card">
+        <h2 className="card-title"><Briefcase/> Issue credential</h2>
+        <p className="card-subtitle">
+          Stores hash(candidateCommitment, localCredentialId, localCredentialSalt) on-chain. Candidate later proves possession of
+          (credId, salt) inside ZK without leaking either.
+        </p>
+        <button
+          className="btn btn-primary"
+          disabled={!deployed || !ratingTarget}
+          onClick={() => onCall('issueCredential', [hexToBytes(ratingTarget)]).catch(() => {})}
+        >
+          <FileCheck2 size={14}/> issueCredential(candidate)
+        </button>
+        <p style={{ marginTop: 8, color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+          The credential id + salt are pulled from the candidate's witness (not visible to the UI).
+        </p>
+      </div>
+
+      <div className="glass-card">
+        <h2 className="card-title"><Briefcase/> Submit a public rating</h2>
+        <p className="card-subtitle">1–5 stars; aggregates update; individual rating values are never individually disclosed (only via the running sum).</p>
+        <label>Commitment to rate:&nbsp;
+          <input value={ratingTarget} onChange={(e) => setRatingTarget(e.target.value)} style={{ width: 280, padding: '4px 8px', borderRadius: 6, background: '#0e0e1a', color: '#eee', border: '1px solid var(--border-active)', fontFamily: 'monospace', fontSize: '0.85rem' }} />
+        </label>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          {[1, 2, 3, 4, 5].map((r) => (
+            <button
+              key={r}
+              className="btn btn-secondary"
+              disabled={!deployed || !ratingTarget}
+              onClick={() => onCall('submitRating', [hexToBytes(ratingTarget), BigInt(r)]).catch(() => {})}
+            >
+              ★ {r}
+            </button>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── EMPLOYER ───────────────────────────────────────────────────────────────
+
+function EmployerScreen({ deployed, ledger, onCall, ps }: { deployed: boolean; ledger: any; onCall: (n: string, a: any[]) => Promise<any>; ps: NightHirePrivateState | null }) {
+  const [ratingMin, setRatingMin] = useState(4);
+  const [jobsMin, setJobsMin] = useState(10);
+  const [jobBandLower, setJobBandLower] = useState(120_000);
+  const [jobBandUpper, setJobBandUpper] = useState(180_000);
+
+  return (
+    <section className="grid-2" style={{ marginTop: 20 }}>
+      <div className="glass-card">
+        <h2 className="card-title"><Building2/> Define screening criteria</h2>
+        <p>Set the criteria a candidate must meet. Candidates prove privately; you only learn PASS/FAIL.</p>
+        <label>Min rating ★: <input type="number" min={1} max={5} value={ratingMin} onChange={(e) => setRatingMin(Number(e.target.value))} style={{ width: 60, padding: '4px 8px', borderRadius: 6, background: '#0e0e1a', color: '#eee', border: '1px solid var(--border-active)' }}/></label>
+        <label style={{ marginLeft: 12 }}>Min jobs: <input type="number" min={0} value={jobsMin} onChange={(e) => setJobsMin(Number(e.target.value))} style={{ width: 60, padding: '4px 8px', borderRadius: 6, background: '#0e0e1a', color: '#eee', border: '1px solid var(--border-active)' }}/></label>
+        <p style={{ marginTop: 8, color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+          When a candidate submits proof, the contract runs the threshold checks against their private values without revealing them.
+        </p>
+      </div>
+
+      <div className="glass-card">
+        <h2 className="card-title"><Layers/> Live applicant queue</h2>
+        <p className="card-subtitle">All registered candidates appear here — but with zero PII, only commitment hashes.</p>
+        {Object.keys(ledger.credentialAttestations).length === 0 ? (
+          <p style={{ color: 'var(--text-muted)' }}>No candidates registered yet.</p>
+        ) : (
+          <ul style={{ listStyle: 'none', padding: 0 }}>
+            {Object.entries(ledger.credentialAttestations).map(([k, v]) => (
+              <li key={k} style={{ padding: '8px 10px', background: '#0e0e1a', borderRadius: 6, marginBottom: 6, fontSize: '0.85rem' }}>
+                <code style={{ color: 'var(--accent-cyan)' }}>0x{k.slice(0, 12)}…{k.slice(-6)}</code>{' '}
+                <span style={{ marginLeft: 8, color: 'var(--text-muted)' }}>{v === k ? '(credential pending)' : '(attestation issued)'}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="glass-card">
+        <h2 className="card-title"><Search/> Verify a candidate's proof</h2>
+        <p>Run a verification as the candidate — produces a transparent PASS/FAIL trace.</p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-secondary" disabled={!deployed || !ps || ps.role !== 'candidate'} onClick={() => onCall('proveMinRating', [BigInt(ratingMin)]).catch(() => {})}>
+            Verify rating ≥ {ratingMin}
+          </button>
+          <button className="btn btn-secondary" disabled={!deployed || !ps || ps.role !== 'candidate'} onClick={() => onCall('proveMinJobs', [BigInt(jobsMin)]).catch(() => {})}>
+            Verify jobs ≥ {jobsMin}
+          </button>
+        </div>
+        {ps && ps.role === 'authority' && (
+          <p style={{ color: 'var(--accent-warning)', marginTop: 8, fontSize: '0.85rem' }}>
+            Switch role to Candidate to verify — verification uses the candidate's private values.
+          </p>
+        )}
+      </div>
+
+      <div className="glass-card">
+        <h2 className="card-title"><Search/> Salary band fit</h2>
+        <p>Job band: ${jobBandLower.toLocaleString()} – ${jobBandUpper.toLocaleString()}</p>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input type="number" value={jobBandLower} onChange={(e) => setJobBandLower(Number(e.target.value))} style={{ width: 120, padding: '4px 8px', borderRadius: 6, background: '#0e0e1a', color: '#eee', border: '1px solid var(--border-active)' }} />
+          <input type="number" value={jobBandUpper} onChange={(e) => setJobBandUpper(Number(e.target.value))} style={{ width: 120, padding: '4px 8px', borderRadius: 6, background: '#0e0e1a', color: '#eee', border: '1px solid var(--border-active)' }} />
+        </div>
+        <button className="btn btn-secondary" disabled={!deployed || !ps || ps.role !== 'candidate'} onClick={() => onCall('proveSalaryFits', [BigInt(jobBandLower), BigInt(jobBandUpper)]).catch(() => {})}>
+          Verify overlap
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// ─── ESCROW ─────────────────────────────────────────────────────────────────
+
+function EscrowScreen({ deployed, ps, onCall }: { deployed: boolean; ps: NightHirePrivateState | null; onCall: (n: string, a: any[]) => Promise<any> }) {
+  const [employerCommitment, setEmployerCommitment] = useState('');
+  const [candidateCommitment, setCandidateCommitment] = useState('');
+  const [amount, setAmount] = useState(1000n);
+  const [milestones, setMilestones] = useState(4n);
+  const [escrowId, setEscrowId] = useState<bigint | null>(null);
+
+  if (!ps) return <p style={{ color: 'var(--text-muted)' }}>Choose a role to use the escrow screen.</p>;
+
+  return (
+    <section className="grid-2" style={{ marginTop: 20 }}>
+      <div className="glass-card">
+        <h2 className="card-title"><Briefcase/> Open escrow (Wave-2)</h2>
+        <p className="card-subtitle">
+          Employer locks funds to milestone releases. The candidate proves milestone index privately; only releases happen on-chain.
+        </p>
+        <label>Employer commitment: <input value={employerCommitment} onChange={(e) => setEmployerCommitment(e.target.value)} style={{ width: 380, padding: '4px 8px', borderRadius: 6, background: '#0e0e1a', color: '#eee', border: '1px solid var(--border-active)', fontFamily: 'monospace', fontSize: '0.85rem' }} /></label>
+        <label>Candidate commitment: <input value={candidateCommitment} onChange={(e) => setCandidateCommitment(e.target.value)} style={{ width: 380, padding: '4px 8px', borderRadius: 6, background: '#0e0e1a', color: '#eee', border: '1px solid var(--border-active)', fontFamily: 'monospace', fontSize: '0.85rem' }} /></label>
+        <label>Amount: <input type="number" value={Number(amount)} onChange={(e) => setAmount(BigInt(e.target.value))} style={{ width: 120, padding: '4px 8px', borderRadius: 6, background: '#0e0e1a', color: '#eee', border: '1px solid var(--border-active)' }}/></label>
+        <label>Milestones: <input type="number" min={1} value={Number(milestones)} onChange={(e) => setMilestones(BigInt(e.target.value))} style={{ width: 80, padding: '4px 8px', borderRadius: 6, background: '#0e0e1a', color: '#eee', border: '1px solid var(--border-active)', marginLeft: 8 }}/></label>
+        <div style={{ marginTop: 8 }}>
+          <button className="btn btn-primary" disabled={!deployed || ps.role !== 'authority' || !employerCommitment.startsWith('0x') || !candidateCommitment.startsWith('0x')} onClick={async () => {
+            try {
+              const r = await onCall('openEscrow', [hexToBytes(employerCommitment.slice(2)), hexToBytes(candidateCommitment.slice(2)), amount, milestones]);
+              setEscrowId(r.result);
+            } catch { /* logged */ }
+          }}>
+            <Plus size={14}/> openEscrow
+          </button>
+          {escrowId !== null && (
+            <p style={{ color: 'var(--accent-emerald)', marginTop: 8 }}>
+              ✓ Escrow opened: <code>#{escrowId.toString()}</code> ({amount.toString()} split into {milestones.toString()} milestones of {(amount / milestones).toString()} each)
+            </p>
+          )}
+        </div>
+        {ps.role !== 'authority' && (
+          <p style={{ color: 'var(--accent-warning)', marginTop: 8, fontSize: '0.85rem' }}>
+            Switch to Authority role to open an escrow.
+          </p>
+        )}
+      </div>
+
+      <div className="glass-card">
+        <h2 className="card-title"><CheckCircle2/> Release milestone</h2>
+        <p className="card-subtitle">Authority releases the next milestone; candidate's <code>localMilestoneProof</code> witness keeps the index private.</p>
+        {escrowId === null ? (
+          <p style={{ color: 'var(--text-muted)' }}>Open an escrow first.</p>
+        ) : (
+          <>
+            <p>Active escrow: <code>#{escrowId.toString()}</code></p>
+            <button className="btn btn-secondary" onClick={() => onCall('releaseMilestone', [escrowId, amount / milestones]).catch(() => {})}>
+              ✓ Release next milestone
+            </button>
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ─── LEDGER ─────────────────────────────────────────────────────────────────
+
+function LedgerScreen({ ledger, logs, onRefresh }: { ledger: any; logs: CircuitLog[]; onRefresh: () => void }) {
+  return (
+    <section style={{ marginTop: 20 }}>
+      <div className="glass-card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2 className="card-title"><Database/> On-chain ledger</h2>
+          <button className="btn btn-secondary" onClick={onRefresh}><RefreshCw size={14}/> Refresh</button>
+        </div>
+        <div className="grid-3" style={{ marginTop: 16 }}>
+          <div className="stat-pill"><div className="stat-value">{ledger.candidateCount.toString()}</div><div className="stat-label">candidateCount</div></div>
+          <div className="stat-pill"><div className="stat-value">{ledger.totalRatings.toString()}</div><div className="stat-label">totalRatings</div></div>
+          <div className="stat-pill"><div className="stat-value">{ledger.completedJobs.toString()}</div><div className="stat-label">completedJobs</div></div>
+          <div className="stat-pill"><div className="stat-value">{ledger.ratingSum.toString()}</div><div className="stat-label">ratingSum</div></div>
+          <div className="stat-pill"><div className="stat-value">{ledger.sequence.toString()}</div><div className="stat-label">sequence</div></div>
+          <div className="stat-pill"><div className="stat-value" style={{ fontSize: '0.7rem', wordBreak: 'break-all' }}>0x{ledger.authority.slice(0, 16)}…</div><div className="stat-label">authority (public hash)</div></div>
+        </div>
+
+        <h3 style={{ marginTop: 24 }}>credentialAttestations ({Object.keys(ledger.credentialAttestations).length} entries)</h3>
+        <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+          <table className="privacy-table">
+            <thead><tr><th>commitment</th><th>attestation hash</th><th>state</th></tr></thead>
+            <tbody>
+              {Object.entries(ledger.credentialAttestations).map(([k, v]) => (
+                <tr key={k}>
+                  <td><code>0x{k.slice(0, 12)}…{k.slice(-6)}</code></td>
+                  <td><code>0x{String(v).slice(0, 12)}…{String(v).slice(-6)}</code></td>
+                  <td>{v === k ? 'register-only' : 'attestation-issued'}</td>
+                </tr>
+              ))}
+              {Object.keys(ledger.credentialAttestations).length === 0 && (
+                <tr><td colSpan={3} style={{ color: 'var(--text-muted)' }}>Empty</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="glass-card" style={{ marginTop: 20 }}>
+        <h2 className="card-title"><FileCheck2/> Circuit-call log (this session)</h2>
+        {logs.length === 0 ? (
+          <p style={{ color: 'var(--text-muted)' }}>No circuits called yet.</p>
+        ) : (
+          <table className="privacy-table">
+            <thead><tr><th>✓/✗</th><th>Circuit</th><th>Args</th><th>Result</th><th>Tx</th><th>Duration</th></tr></thead>
+            <tbody>
+              {logs.map((l) => (
+                <tr key={l.id}>
+                  <td>{l.ok ? <CheckCircle2 size={14} color="var(--accent-emerald)" /> : <AlertTriangle size={14} color="var(--accent-warning)" />}</td>
+                  <td><code>{l.circuit}</code></td>
+                  <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{l.args.join(', ')}</td>
+                  <td><code style={{ fontSize: '0.75rem' }}>{l.error ? <span style={{ color: 'var(--accent-warning)' }}>{l.error}</span> : String(l.result ?? '—').slice(0, 40)}</code></td>
+                  <td><code style={{ fontSize: '0.65rem', color: 'var(--accent-purple-light)' }}>0x{l.txId.slice(0, 12)}…</code></td>
+                  <td style={{ fontSize: '0.75rem' }}>{l.durationMs.toFixed(1)}ms</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ─── CONTRACT SOURCE ────────────────────────────────────────────────────────
+
+function ContractSourceScreen() {
+  const [source, setSource] = useState<string>('');
+  const [escrow, setEscrow] = useState<string>('');
+
+  useEffect(() => {
+    fetch('/nighthire.compact')
+      .then((r) => r.text())
+      .then(setSource)
+      .catch(() => setSource('# nighthire.compact — placed in /boilerplate/contract/src/, served here for in-app verification.'));
+    fetch('/escrow.compact')
+      .then((r) => r.text())
+      .then(setEscrow)
+      .catch(() => setEscrow('# escrow.compact — placed in /boilerplate/contract/src/wave2/.'));
+  }, []);
+
+  return (
+    <section style={{ marginTop: 20 }}>
+      <div className="glass-card">
+        <h2 className="card-title"><FileCheck2/> nighthire.compact — the on-chain privacy contract</h2>
+        <p className="card-subtitle">
+          This is the source the deployed contract was compiled from. 8 user-facing circuits; all use witnesses for
+          any privacy-sensitive computation. Sequence counter increments force full ZK proof generation (see the
+          <code> contract-info.json </code> in <code>boilerplate/contract/src/managed/nighthire/</code>).
+        </p>
+        <pre style={{ background: '#0a0a14', padding: 16, borderRadius: 8, overflow: 'auto', maxHeight: 480, fontSize: '0.8rem', color: '#cdd6f4', fontFamily: 'JetBrains Mono, monospace' }}>
+{source}
+        </pre>
+      </div>
+
+      <div className="glass-card" style={{ marginTop: 20 }}>
+        <h2 className="card-title"><FileCheck2/> escrow.compact — milestone escrow (Wave-2)</h2>
+        <p className="card-subtitle">5 circuits; releases happen with a private milestone index.</p>
+        <pre style={{ background: '#0a0a14', padding: 16, borderRadius: 8, overflow: 'auto', maxHeight: 360, fontSize: '0.8rem', color: '#cdd6f4', fontFamily: 'JetBrains Mono, monospace' }}>
+{escrow}
+        </pre>
+      </div>
+    </section>
   );
 }
 
