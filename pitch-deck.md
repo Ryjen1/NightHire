@@ -1,5 +1,7 @@
 # NightHire — Midnight Buildathon Wave 2 Submission
 
+**🌑 Live demo:** [night-hire-maryjanes-projects-288d9e41.vercel.app](https://night-hire-maryjanes-projects-288d9e41.vercel.app)
+
 > **Slide deck** — convert this to PDF with `pandoc pitch-deck.md -o pitch-deck.pdf -t beamer` or paste into Google Slides / Figma. Total: 8 slides.
 
 ---

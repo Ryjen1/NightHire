@@ -1,5 +1,7 @@
 # 🛡️ NightHire — Privacy-Preserving Progressive Disclosure Hiring Protocol
 
+**🌑 Live demo:** [night-hire-maryjanes-projects-288d9e41.vercel.app](https://night-hire-maryjanes-projects-288d9e41.vercel.app)
+
 <p align="center">
   <img src="./assets/banner.png" alt="NightHire Banner" width="100%" />
 </p>

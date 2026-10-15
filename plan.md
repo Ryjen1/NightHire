@@ -1,5 +1,7 @@
 # 🛡️ NightHire — Product Plan & Multi-Wave Roadmap
 
+**🌑 Live demo:** [night-hire-maryjanes-projects-288d9e41.vercel.app](https://night-hire-maryjanes-projects-288d9e41.vercel.app)
+
 ## Executive Summary
 
 **NightHire** is a privacy-first, zero-knowledge hiring and credential-verification protocol built on the **Midnight Network**. It solves the structural flaw in modern recruitment: candidates are forced to leak their full legal name, current employer, salary history, and personal contact information into arbitrary applicant tracking systems (ATS) **before** knowing if they meet the job bar.
