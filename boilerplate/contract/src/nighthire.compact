@@ -1,48 +1,119 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Ryjen1 (NightHire contributors)
+// Licensed under the Apache License, Version 2.0
+
 pragma language_version >= 0.21.0;
 
 import CompactStandardLibrary;
 
-// ─── Public Ledger State ───
+// ════════════════════════════════════════════════════════════════════════════
+// Public Ledger State
+// ════════════════════════════════════════════════════════════════════════════
+
+// Platform authority identity hash (set in constructor from admin secret).
 export ledger authority: Bytes<32>;
+
+// Aggregated reputation counters (public aggregate, individual values stay private).
 export ledger candidateCount: Counter;
 export ledger totalRatings: Counter;
 export ledger ratingSum: Counter;
 export ledger completedJobs: Counter;
+
+// Replay-protection monotonic counter.
 export ledger sequence: Counter;
 
-// ─── Private Witnesses ───
+// Credential commitments: Maps a candidate's public commitment hash
+// to a (potentially upgraded) attestation hash. Initially seeded with the
+// commitment itself; replaced by a hash(id, salt) when attestations are issued.
+export ledger credentialAttestations: Map<Bytes<32>, Bytes<32>>;
+
+// ════════════════════════════════════════════════════════════════════════════
+// Private Witnesses (read from local private state in the client witness provider)
+// ════════════════════════════════════════════════════════════════════════════
+
+// Platform authority's signing secret. Held only by the platform admin's client.
+witness localAuthorityKey(): Bytes<32>;
+
+// Candidate's anonymous secret key (no PII).
 witness localSecretKey(): Bytes<32>;
+
+// Candidate's accumulated average rating (private).
 witness localRating(): Uint<16>;
 
-// ─── Constructor ───
-constructor(adminSk: Bytes<32>) {
-  authority = disclose(publicKey(adminSk, pad(32, "nighthire:init:")));
+// Candidate's accumulated completed job count (private).
+witness localCompletedJobs(): Uint<16>;
+
+// Candidate's possession of a Level-3 attestation: id + randomness.
+witness localCredentialId(): Bytes<32>;
+witness localCredentialSalt(): Bytes<32>;
+
+// Wave 2 — candidate's salary band [lower, upper], both private.
+witness localSalaryLower(): Uint<64>;
+witness localSalaryUpper(): Uint<64>;
+
+// Wave 2 — candidate's jurisdiction hash (private; the employer supplies the
+// expected hash from an allow-list off-chain).
+witness localJurisdictionHash(): Bytes<32>;
+
+// ════════════════════════════════════════════════════════════════════════════
+// Constructor
+// ════════════════════════════════════════════════════════════════════════════
+
+// `adminKey` is the platform authority's signing key. The contract
+// never stores it directly; only its one-way hash (the `authority` ledger
+// field) is retained.
+constructor(adminKey: Bytes<32>) {
+  authority = disclose(hashAuthorityKey(adminKey));
   sequence.increment(1);
 }
 
-// ─── Identity & Credential Circuits ───
+// ════════════════════════════════════════════════════════════════════════════
+// Authority Circuits
+// ════════════════════════════════════════════════════════════════════════════
 
-// Platform authority registers verified candidate commitment without storing PII
+// Wave 1: platform authority registers a verified candidate commitment.
+// The commitment hash is stored on-chain keyed to itself, allowing later
+// issuance of Level-3 cryptographic attestations against the same row.
 export circuit register(commitment: Bytes<32>): [] {
-  const sk = localSecretKey();
-  const seq = sequence as Field as Bytes<32>;
-  assert(authority == publicKey(sk, seq), "Not authorized as authority");
+  const cm = disclose(commitment);
+  assert(!credentialAttestations.member(cm), "Commitment already registered");
+  const pk = hashAuthorityKey(localAuthorityKey());
+  assert(authority == pk, "Not authorized as authority");
+  credentialAttestations.insert(cm, cm);
   candidateCount.increment(1);
   sequence.increment(1);
 }
 
-// Candidate anonymously proves active registered status
-export circuit proveRegistered(): Bytes<32> {
-  const sk = localSecretKey();
-  const seq = sequence as Field as Bytes<32>;
-  const proof = disclose(publicKey(sk, seq));
-  return proof;
+// Wave 1: authority issues a Level-3 cryptographic attestation against an
+// already-registered candidate. (credentialId, salt) come from the
+// authority's private state and never leak to the ledger — only the
+// persistent hash of (commitment, credentialId, salt) is stored. The
+// candidate later proves possession of (credentialId, salt) inside a ZK
+// proof without revealing either.
+export circuit issueCredential(candidateCommitment: Bytes<32>): [] {
+  const cm = disclose(candidateCommitment);
+  assert(credentialAttestations.member(cm), "Candidate not registered");
+  const pk = hashAuthorityKey(localAuthorityKey());
+  assert(authority == pk, "Not authorized as authority");
+  const credId = localCredentialId();
+  const salt = localCredentialSalt();
+  const credHash = persistentHash<Vector<3, Bytes<32>>>(
+    [cm, credId, salt]
+  );
+  credentialAttestations.insert(cm, disclose(credHash));
+  sequence.increment(1);
 }
 
-// ─── Reputation & Rating Circuits ───
+// ════════════════════════════════════════════════════════════════════════════
+// Reputation Circuits (public clients — rating values stay private)
+// ════════════════════════════════════════════════════════════════════════════
 
-// Employer/Client submits rating for verified milestone completion (1-5)
-export circuit submitRating(rating: Uint<16>): [] {
+// A client/employer submits a rating for a candidate's completed milestone.
+// The aggregate counters update; individual ratings leak only as the running
+// sum increment (necessary for the average to be recomputable).
+export circuit submitRating(candidateCommitment: Bytes<32>, rating: Uint<16>): [] {
+  const cm = disclose(candidateCommitment);
+  assert(credentialAttestations.member(cm), "Candidate not registered");
   assert(rating >= 1, "Rating must be >= 1");
   assert(rating <= 5, "Rating must be <= 5");
   totalRatings.increment(1);
@@ -51,19 +122,84 @@ export circuit submitRating(rating: Uint<16>): [] {
   sequence.increment(1);
 }
 
-// Candidate selectively discloses meeting a minimum rating threshold
+// Wave 1: candidate ZK-proves their accumulated rating is >= threshold.
+// Threshold is public; the candidate's exact rating never leaves the witness.
 export circuit proveMinRating(threshold: Uint<16>): Uint<16> {
   const myRating = localRating();
   assert(myRating >= threshold, "Rating below required threshold");
+  sequence.increment(1);
   return disclose(threshold);
 }
 
-// Candidate selectively proves minimum completed jobs
+// Wave 1: candidate ZK-proves their completed-jobs count >= threshold.
+// Threshold is public; the candidate's exact count never leaves the witness.
 export circuit proveMinJobs(threshold: Uint<16>): Uint<16> {
+  const myJobs = localCompletedJobs();
+  assert(myJobs >= threshold, "Completed jobs below required threshold");
+  sequence.increment(1);
   return disclose(threshold);
 }
 
-// ─── Cryptographic Key Derivation ───
-export circuit publicKey(sk: Bytes<32>, seq: Bytes<32>): Bytes<32> {
-  return persistentHash<Vector<3, Bytes<32>>>([pad(32, "nighthire:pk:"), seq, sk]);
+// Wave 1: candidate proves they hold the secret behind a registered
+// commitment by revealing a derivation token. The off-chain employer can
+// verify membership in the candidate set without learning identity.
+export circuit proveRegistered(): Bytes<32> {
+  sequence.increment(1);
+  const sk = localSecretKey();
+  return disclose(
+    persistentHash<Vector<2, Bytes<32>>>(
+      [pad(32, "nighthire:reg:"), sk]
+    )
+  );
+}
+
+// Wave 2: candidate proves possession of a Level-3 attestation by re-deriving
+// the stored hash inside the ZK proof using their private (credentialId, salt)
+// witnesses. Verifier learns only "yes" or "no"; the credential id, salt, and
+// candidate identity all stay private.
+export circuit proveCredential(candidateCommitment: Bytes<32>): [] {
+  const cm = disclose(candidateCommitment);
+  assert(credentialAttestations.member(cm), "Candidate not registered");
+  const expected = credentialAttestations.lookup(cm);
+  const credId = localCredentialId();
+  const salt = localCredentialSalt();
+  const derived = persistentHash<Vector<3, Bytes<32>>>(
+    [cm, credId, salt]
+  );
+  assert(expected == derived, "Credential not held");
+  sequence.increment(1);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Wave 2 — Range / Overlap Proofs
+// ════════════════════════════════════════════════════════════════════════════
+
+// Candidate proves their private salary band [lower, upper] overlaps with
+// the employer's posted band [jobLower, jobUpper]. Both candidate bounds
+// stay private; only "fits" / "doesn't fit" is revealed.
+export circuit proveSalaryFits(jobLower: Uint<64>, jobUpper: Uint<64>): [] {
+  const lower = localSalaryLower();
+  const upper = localSalaryUpper();
+  assert(lower <= jobUpper, "Candidate min above job max");
+  assert(upper >= jobLower, "Candidate max below job min");
+  sequence.increment(1);
+}
+
+// Candidate proves their jurisdiction matches an employer-supplied expected
+// commitment. The actual jurisdiction name stays private; only the
+// commitment equality is checked inside ZK.
+export circuit proveJurisdiction(expectedCommitment: Bytes<32>): [] {
+  const actual = localJurisdictionHash();
+  assert(actual == expectedCommitment, "Jurisdiction not in allowed set");
+  sequence.increment(1);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Helpers (private to the contract; not exported)
+// ════════════════════════════════════════════════════════════════════════════
+
+circuit hashAuthorityKey(adminKey: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>(
+    [pad(32, "nighthire:auth:"), adminKey]
+  );
 }

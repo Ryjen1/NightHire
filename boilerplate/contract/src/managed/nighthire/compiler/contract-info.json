@@ -23,14 +23,22 @@
       }
     },
     {
-      "name": "proveRegistered",
+      "name": "issueCredential",
       "pure": false,
       "proof": true,
       "arguments": [
+        {
+          "name": "candidateCommitment",
+          "type": {
+            "type-name": "Bytes",
+            "length": 32
+          }
+        }
       ],
       "result-type": {
-        "type-name": "Bytes",
-        "length": 32
+        "type-name": "Tuple",
+        "types": [
+        ]
       }
     },
     {
@@ -38,6 +46,13 @@
       "pure": false,
       "proof": true,
       "arguments": [
+        {
+          "name": "candidateCommitment",
+          "type": {
+            "type-name": "Bytes",
+            "length": 32
+          }
+        },
         {
           "name": "rating",
           "type": {
@@ -55,7 +70,7 @@
     {
       "name": "proveMinRating",
       "pure": false,
-      "proof": false,
+      "proof": true,
       "arguments": [
         {
           "name": "threshold",
@@ -72,8 +87,8 @@
     },
     {
       "name": "proveMinJobs",
-      "pure": true,
-      "proof": false,
+      "pure": false,
+      "proof": true,
       "arguments": [
         {
           "name": "threshold",
@@ -89,19 +104,23 @@
       }
     },
     {
-      "name": "publicKey",
-      "pure": true,
-      "proof": false,
+      "name": "proveRegistered",
+      "pure": false,
+      "proof": true,
+      "arguments": [
+      ],
+      "result-type": {
+        "type-name": "Bytes",
+        "length": 32
+      }
+    },
+    {
+      "name": "proveCredential",
+      "pure": false,
+      "proof": true,
       "arguments": [
         {
-          "name": "sk",
-          "type": {
-            "type-name": "Bytes",
-            "length": 32
-          }
-        },
-        {
-          "name": "seq",
+          "name": "candidateCommitment",
           "type": {
             "type-name": "Bytes",
             "length": 32
@@ -109,12 +128,67 @@
         }
       ],
       "result-type": {
-        "type-name": "Bytes",
-        "length": 32
+        "type-name": "Tuple",
+        "types": [
+        ]
+      }
+    },
+    {
+      "name": "proveSalaryFits",
+      "pure": false,
+      "proof": true,
+      "arguments": [
+        {
+          "name": "jobLower",
+          "type": {
+            "type-name": "Uint",
+            "maxval": 18446744073709551615
+          }
+        },
+        {
+          "name": "jobUpper",
+          "type": {
+            "type-name": "Uint",
+            "maxval": 18446744073709551615
+          }
+        }
+      ],
+      "result-type": {
+        "type-name": "Tuple",
+        "types": [
+        ]
+      }
+    },
+    {
+      "name": "proveJurisdiction",
+      "pure": false,
+      "proof": true,
+      "arguments": [
+        {
+          "name": "expectedCommitment",
+          "type": {
+            "type-name": "Bytes",
+            "length": 32
+          }
+        }
+      ],
+      "result-type": {
+        "type-name": "Tuple",
+        "types": [
+        ]
       }
     }
   ],
   "witnesses": [
+    {
+      "name": "localAuthorityKey",
+      "arguments": [
+      ],
+      "result type": {
+        "type-name": "Bytes",
+        "length": 32
+      }
+    },
     {
       "name": "localSecretKey",
       "arguments": [
@@ -131,6 +205,60 @@
       "result type": {
         "type-name": "Uint",
         "maxval": 65535
+      }
+    },
+    {
+      "name": "localCompletedJobs",
+      "arguments": [
+      ],
+      "result type": {
+        "type-name": "Uint",
+        "maxval": 65535
+      }
+    },
+    {
+      "name": "localCredentialId",
+      "arguments": [
+      ],
+      "result type": {
+        "type-name": "Bytes",
+        "length": 32
+      }
+    },
+    {
+      "name": "localCredentialSalt",
+      "arguments": [
+      ],
+      "result type": {
+        "type-name": "Bytes",
+        "length": 32
+      }
+    },
+    {
+      "name": "localSalaryLower",
+      "arguments": [
+      ],
+      "result type": {
+        "type-name": "Uint",
+        "maxval": 18446744073709551615
+      }
+    },
+    {
+      "name": "localSalaryUpper",
+      "arguments": [
+      ],
+      "result type": {
+        "type-name": "Uint",
+        "maxval": 18446744073709551615
+      }
+    },
+    {
+      "name": "localJurisdictionHash",
+      "arguments": [
+      ],
+      "result type": {
+        "type-name": "Bytes",
+        "length": 32
       }
     }
   ],
@@ -176,6 +304,20 @@
       "index": 5,
       "exported": true,
       "storage": "Counter"
+    },
+    {
+      "name": "credentialAttestations",
+      "index": 6,
+      "exported": true,
+      "storage": "Map",
+      "key": {
+        "type-name": "Bytes",
+        "length": 32
+      },
+      "value": {
+        "type-name": "Bytes",
+        "length": 32
+      }
     }
   ]
 }
