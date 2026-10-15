@@ -1,25 +1,25 @@
-import { contracts, type CounterPrivateState } from '@midnight-ntwrk/contract';
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Ryjen1 (NightHire contributors)
+// Licensed under the Apache License, Version 2.0
+
+import { contracts } from '@midnight-ntwrk/contract';
 import type { ImpureCircuitId, MidnightProviders } from '@midnight-ntwrk/midnight-js-types';
 import type { DeployedContract, FoundContract } from '@midnight-ntwrk/midnight-js-contracts';
 
-// Get the dynamic contract module
 const getContractModule = () => {
-  const contractNames = Object.keys(contracts);
-  if (contractNames.length === 0) {
-    throw new Error('No contract found in contracts object');
-  }
-  return contracts[contractNames[0]];
+  const names = Object.keys(contracts);
+  if (names.length === 0) throw new Error('No contract found in @midnight-ntwrk/contract');
+  return (contracts as any)[names[0]];
 };
 
 const contractModule = getContractModule();
 
-export type { CounterPrivateState };
-export type CounterCircuits = ImpureCircuitId<typeof contractModule.Contract>;
+export type NightHirePrivateState =
+  | { readonly role: 'authority'; readonly state: { readonly adminKey: Uint8Array } }
+  | { readonly role: 'candidate'; readonly state: any };
 
-export const CounterPrivateStateId = 'counterPrivateState';
-
-export type CounterProviders = MidnightProviders<CounterCircuits, typeof CounterPrivateStateId, CounterPrivateState>;
-
-export type CounterContract = typeof contractModule.Contract;
-
-export type DeployedCounterContract = DeployedContract<CounterContract> | FoundContract<CounterContract>;
+export type NightHireCircuits = ImpureCircuitId<typeof contractModule.Contract>;
+export const NightHirePrivateStateId = 'nighthirePrivateState';
+export type NightHireProviders = MidnightProviders<NightHireCircuits, typeof NightHirePrivateStateId, NightHirePrivateState>;
+export type NightHireContract = typeof contractModule.Contract;
+export type DeployedNightHireContract = DeployedContract<NightHireContract> | FoundContract<NightHireContract>;
