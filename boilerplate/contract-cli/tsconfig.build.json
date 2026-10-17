@@ -1,9 +1,11 @@
 {
   "extends": "./tsconfig.json",
+  "include": ["src/**/*.ts"],
   "exclude": [
     "src/**/*.test.ts",
     "src/api.ts",
-    "src/test/commons.ts"
+    "src/test/commons.ts",
+    "src/enhanced-api.ts"
   ],
   "compilerOptions": {}
 }
