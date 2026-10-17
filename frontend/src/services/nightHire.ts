@@ -84,6 +84,7 @@ export type NightHirePrivateState =
   | { readonly role: 'candidate'; readonly state: CandidatePrivateState };
 
 export const PRIVATE_STATE_KEY = 'nighthire.private-state.v1';
+export const ESCROW_STATE_KEY = 'nighthire.escrow-state.v1';
 
 function randomBytes(n: number): Uint8Array {
   const buf = new Uint8Array(n);
@@ -348,3 +349,233 @@ function hexify(a: unknown): string {
 }
 
 export { bytesToHex, hexToBytes };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EscrowRuntime — in-browser execution of the Wave-2 escrow contract.
+// Mirrors NightHireRuntime; separate witness provider, separate ledger.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export type EscrowAuthorityPrivateState = {
+  readonly adminKey: Uint8Array;
+  // settable from the UI: bumped before each releaseMilestone call so
+  // the localMilestoneProof witness returns the next index (1, 2, 3, …).
+  milestoneIndex: bigint;
+};
+
+export type EscrowPrivateState =
+  | { readonly role: 'escrowAuthority'; readonly state: EscrowAuthorityPrivateState };
+
+export function newEscrowAuthorityState(adminKey?: Uint8Array): EscrowAuthorityPrivateState {
+  return {
+    adminKey: adminKey ?? randomBytes(32),
+    milestoneIndex: 0n,
+  };
+}
+
+export function loadEscrowState(): EscrowPrivateState | null {
+  if (typeof localStorage === 'undefined') return null;
+  const raw = localStorage.getItem(ESCROW_STATE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    // Re-hydrate Uint8Array from base64 if applicable. We stored it as
+    // a plain object array, so restore.
+    const s = parsed?.state;
+    if (!s) return null;
+    const adminKey = s.adminKey && typeof s.adminKey === 'object' && s.adminKey.data
+      ? new Uint8Array(s.adminKey.data)
+      : new Uint8Array(s.adminKey ?? []);
+    return {
+      role: 'escrowAuthority',
+      state: { adminKey, milestoneIndex: BigInt(s.milestoneIndex ?? 0n) },
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function saveEscrowState(s: EscrowPrivateState) {
+  if (typeof localStorage === 'undefined') return;
+  // Uint8Array is not JSON-serialisable directly; encode as { data: number[] }.
+  const out = {
+    role: s.role,
+    state: {
+      adminKey: { data: Array.from(s.state.adminKey) },
+      milestoneIndex: s.state.milestoneIndex.toString(),
+    },
+  };
+  localStorage.setItem(ESCROW_STATE_KEY, JSON.stringify(out));
+}
+
+export function clearEscrowState() {
+  if (typeof localStorage === 'undefined') return;
+  localStorage.removeItem(ESCROW_STATE_KEY);
+}
+
+export async function loadEscrowRuntime(): Promise<{ Contract: any; ledger: any; error: string | null; ready: boolean } | null> {
+  try {
+    const mod = await import('../contract/managed/escrow/contract/index.js');
+    return { Contract: (mod as any).Contract, ledger: (mod as any).ledger, error: null, ready: true };
+  } catch (e: any) {
+    console.error('Escrow: compiled contract module failed to load', e);
+    return { Contract: null, ledger: null, error: e?.message || String(e), ready: false };
+  }
+}
+
+// ── Escrow witness provider ─────────────────────────────────────────────────
+
+function isEscrowAuthority(
+  ps: EscrowPrivateState,
+): ps is { role: 'escrowAuthority'; state: EscrowAuthorityPrivateState } {
+  return ps.role === 'escrowAuthority';
+}
+
+export const escrowWitnesses = {
+  localEscrowAuthorityKey: (
+    { privateState }: WitnessContext<any, EscrowPrivateState>
+  ): [EscrowPrivateState, Uint8Array] => {
+    if (!isEscrowAuthority(privateState)) {
+      throw new Error('localEscrowAuthorityKey requires escrowAuthority role');
+    }
+    return [privateState, privateState.state.adminKey];
+  },
+  // link-proof witnesses — populated with a placeholder buffer because the
+  // Escrow UI doesn't call proveEmployerLink / proveCandidateLink yet. The
+  // assert-on-equality in those circuits means the placeholder will fail if
+  // a future caller invokes them with a mismatched commitment, which is the
+  // correct behaviour.
+  localEmployerSecretKey: (
+    { privateState }: WitnessContext<any, EscrowPrivateState>
+  ): [EscrowPrivateState, Uint8Array] => {
+    if (!isEscrowAuthority(privateState)) {
+      throw new Error('localEmployerSecretKey requires escrowAuthority role');
+    }
+    return [privateState, new Uint8Array(32)];
+  },
+  localCandidateSecretKey: (
+    { privateState }: WitnessContext<any, EscrowPrivateState>
+  ): [EscrowPrivateState, Uint8Array] => {
+    if (!isEscrowAuthority(privateState)) {
+      throw new Error('localCandidateSecretKey requires escrowAuthority role');
+    }
+    return [privateState, new Uint8Array(32)];
+  },
+  // The Open / Refund / Release-Final circuits compare the witness to the
+  // ledger's escrowSequence / escrowAmount map; the index is read from
+  // privateState.milestoneIndex (bumped by the UI before each release call).
+  localMilestoneProof: (
+    { privateState }: WitnessContext<any, EscrowPrivateState>
+  ): [EscrowPrivateState, bigint] => {
+    if (!isEscrowAuthority(privateState)) {
+      throw new Error('localMilestoneProof requires escrowAuthority role');
+    }
+    return [privateState, privateState.state.milestoneIndex];
+  },
+};
+
+// ── EscrowRuntime class ─────────────────────────────────────────────────────
+
+const ESCROW_COIN_PUB = '00'.repeat(32);
+const ESCROW_ADDR = dummyContractAddress();
+
+export class EscrowRuntime {
+  private contract: any;
+  private contractState: any;
+  private ledgerDecoder: any;
+
+  constructor(Contract?: any, ledgerDecoderArg?: any) {
+    this.contract = new (Contract ?? null)(escrowWitnesses);
+    this.ledgerDecoder = ledgerDecoderArg;
+    // Initial ledger: every export at 0 except the empty maps.
+    this.contractState = {
+      escrowAuthority: new Uint8Array(32),
+      escrowSequence: 0n,
+      escrowCount: 0n,
+      activeEscrowByPair: new Map(),
+      escrowAmount: new Map(),
+      escrowEmployer: new Map(),
+      escrowCandidate: new Map(),
+      escrowReleased: new Map(),
+      escrowMilestoneCount: new Map(),
+      escrowState: new Map(),
+    };
+  }
+
+  async deploy(adminKey: Uint8Array, _ps: EscrowPrivateState): Promise<CircuitResult<Uint8Array>> {
+    const t0 = performance.now();
+    const ctx = createConstructorContext(
+      { adminKey } as any,
+      ESCROW_COIN_PUB,
+    );
+    const initial = this.contract.initialState(ctx, adminKey);
+    this.contractState = (initial as any).currentContractState;
+    const t1 = performance.now();
+    const txId = await sha256Hex(`escrow-deploy:${bytesToHex(adminKey)}:${Date.now()}`);
+    return {
+      txId,
+      result: this.readAuthority(),
+      ledger: this.ledger(),
+      durationMs: t1 - t0,
+    };
+  }
+
+  async call<T>(
+    circuitId: 'openEscrow' | 'releaseMilestone' | 'refundEscrow' | 'proveEmployerLink' | 'proveCandidateLink',
+    args: any[],
+    _ps: EscrowPrivateState,
+  ): Promise<CircuitResult<T>> {
+    const t0 = performance.now();
+    const ctx = createCircuitContext(ESCROW_ADDR, ESCROW_COIN_PUB, this.contractState, _ps);
+    const fn = this.contract.impureCircuits[circuitId].bind(this.contract.impureCircuits);
+    let out: { result: T; context: CircuitContext<any> };
+    try {
+      out = fn(ctx, ...args);
+    } catch (e) {
+      throw new Error(`${circuitId}(${args.map(hexify).join(', ')}) failed: ${(e as Error).message}`);
+    }
+    this.contractState = (out.context as any).currentQueryContext.state;
+    const t1 = performance.now();
+    const txId = await sha256Hex(
+      `escrow:${circuitId}:${args.map(hexify).join(',')}:${Date.now()}`
+    );
+    return {
+      txId,
+      result: out.result,
+      ledger: this.ledger(),
+      durationMs: t1 - t0,
+    };
+  }
+
+  ledger() {
+    if (!this.ledgerDecoder) {
+      return {
+        escrowAuthority: bytesToHex(this.contractState.escrowAuthority ?? new Uint8Array(32)),
+        escrowSequence: this.contractState.escrowSequence?.toString?.() ?? '0',
+        escrowCount: this.contractState.escrowCount?.toString?.() ?? '0',
+        escrows: [],
+      };
+    }
+    const dec: any = this.ledgerDecoder(this.contractState);
+    const escrowAmount = dec.escrowAmount instanceof Map ? dec.escrowAmount : new Map(dec.escrowAmount ?? []);
+    const escrowReleased = dec.escrowReleased instanceof Map ? dec.escrowReleased : new Map(dec.escrowReleased ?? []);
+    const escrowMilestoneCount = dec.escrowMilestoneCount instanceof Map ? dec.escrowMilestoneCount : new Map(dec.escrowMilestoneCount ?? []);
+    const escrowState = dec.escrowState instanceof Map ? dec.escrowState : new Map(dec.escrowState ?? []);
+    const escrows = [...escrowAmount.keys()].map((id: bigint) => ({
+      id: id.toString(),
+      amount: (escrowAmount.get(id) ?? 0n).toString(),
+      released: (escrowReleased.get(id) ?? 0n).toString(),
+      milestones: (escrowMilestoneCount.get(id) ?? 0n).toString(),
+      state: Number(escrowState.get(id) ?? 0n),
+    }));
+    return {
+      escrowAuthority: bytesToHex(dec.escrowAuthority),
+      escrowSequence: dec.escrowSequence.toString(),
+      escrowCount: dec.escrowCount.toString(),
+      escrows,
+    };
+  }
+
+  readAuthority(): Uint8Array {
+    return (this.contractState as any).escrowAuthority ?? new Uint8Array(32);
+  }
+}
