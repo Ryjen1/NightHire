@@ -27,10 +27,32 @@ const ADDR     = dummyContractAddress();  // placeholder ContractAddress for loc
 // Type-erased import of the auto-generated contract module. The compiler
 // emits a typed `Contract` class with `impureCircuits` and provable keys;
 // we keep the surface tiny so the runtime shape is easy to swap out.
-import * as NightHireModule from '../contract/managed/nighthire/contract/index.js';
+//
+// IMPORTANT: this import is wrapped in a lazy getter so that any failure
+// inside the auto-generated contract module (e.g. a top-level
+// `checkRuntimeVersion` mismatch with the onchain-runtime version that
+// shipped in the Vite bundle) does NOT crash the entire React tree. The
+// `runtimeReady` flag is what the UI uses to know whether circuits can
+// actually be called.
+export const NightHireContract: any = null;  // resolved lazily via loadNightHireRuntime()
+export const ledgerDecoder: any = null;
+export const runtimeError: string | null = null;
+export const runtimeReady: boolean = false;
 
-export const NightHireContract: any = (NightHireModule as any).Contract;
-export const ledgerDecoder: any = (NightHireModule as any).ledger;
+let resolved: { Contract: any; ledger: any; error: string | null; ready: boolean } | null = null;
+
+export async function loadNightHireRuntime(): Promise<typeof resolved> {
+  if (resolved) return resolved;
+  try {
+    const mod = await import('../contract/managed/nighthire/contract/index.js');
+    resolved = { Contract: (mod as any).Contract, ledger: (mod as any).ledger, error: null, ready: true };
+    return resolved;
+  } catch (e: any) {
+    resolved = { Contract: null, ledger: null, error: e?.message || String(e), ready: false };
+    console.error('NightHire: compiled contract module failed to load', e);
+    return resolved;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Witness provider — backs every circuit with real witness values.
@@ -223,9 +245,11 @@ async function sha256Hex(input: string): Promise<string> {
 export class NightHireRuntime {
   private contract: any;
   private contractState: any;
+  private ledgerDecoder: any;
 
-  constructor(initialLedgerSeed?: any) {
-    this.contract = new NightHireContract(witnesses);
+  constructor(Contract?: any, ledgerDecoderArg?: any, initialLedgerSeed?: any) {
+    this.contract = new (Contract ?? NightHireContract)(witnesses);
+    this.ledgerDecoder = ledgerDecoderArg ?? ledgerDecoder;
     this.contractState = initialLedgerSeed ?? {
       authority: new Uint8Array(32),
       candidateCount: 0n,
@@ -291,7 +315,7 @@ export class NightHireRuntime {
 
   /** Decode the current ledger into a typed object. */
   ledger() {
-    const dec: any = ledgerDecoder(this.contractState);
+    const dec: any = (this.ledgerDecoder ?? ledgerDecoder)(this.contractState);
     // Convert Map to plain Map<hex,hex> for React rendering.
     const atts: Record<string, string> = {};
     if (dec && dec.credentialAttestations && typeof dec.credentialAttestations[Symbol.iterator] === 'function') {

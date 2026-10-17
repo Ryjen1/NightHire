@@ -25,7 +25,6 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import {
-  NightHireRuntime,
   loadPrivateState,
   savePrivateState,
   clearPrivateState,
@@ -33,6 +32,8 @@ import {
   newCandidateState,
   bytesToHex,
   hexToBytes,
+  loadNightHireRuntime,
+  NightHireRuntime,
   type NightHirePrivateState,
   type AuthorityPrivateState,
   type CandidatePrivateState,
@@ -59,10 +60,37 @@ const isCandidate = (p: NightHirePrivateState | null): p is { role: 'candidate';
 
 export function App() {
   const [tab, setTab] = useState<Tab>('overview');
-
-  const [runtime] = useState(() => new NightHireRuntime());
+  const [runtime, setRuntime] = useState<NightHireRuntime | null>(null);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [deployed, setDeployed] = useState(false);
-  const [ledger, setLedger] = useState(() => runtime.ledger());
+  void runtimeError;
+  const [ledger, setLedger] = useState<any>(() => ({
+    authority: '0'.repeat(64),
+    candidateCount: 0n,
+    totalRatings: 0n,
+    ratingSum: 0n,
+    completedJobs: 0n,
+    sequence: 0n,
+    credentialAttestations: {},
+    member: () => false,
+  }));
+
+  // Lazily load the Compact runtime in the browser. This way, even if the
+  // WASM fails to initialize (CSP, network, etc.) the React UI still mounts.
+  useEffect(() => {
+    (async () => {
+      try {
+        const { Contract, ledger, ready, error } = await loadNightHireRuntime();
+        if (!ready || !Contract) {
+          setRuntimeError(error || 'contract module failed to load');
+          return;
+        }
+        setRuntime(new NightHireRuntime(Contract, ledger));
+      } catch (e: any) {
+        setRuntimeError(e?.message || String(e));
+      }
+    })();
+  }, []);
 
   const [privateState, setPrivateState] = useState<NightHirePrivateState | null>(() => loadPrivateState());
   const [logs, setLogs] = useState<CircuitLog[]>([]);
@@ -73,10 +101,13 @@ export function App() {
   }, []);
 
   // Re-read the ledger from the runtime (cheap; in-memory copy).
-  const refreshLedger = useCallback(() => setLedger(runtime.ledger()), [runtime]);
+  const refreshLedger = useCallback(() => {
+    if (runtime) setLedger(runtime.ledger());
+  }, [runtime]);
 
   // ── Deploy (constructor) ──────────────────────────────────────────────────
   const handleDeploy = useCallback(async () => {
+    if (!runtime) return;
     if (!isAuthority(privateState)) return;
     try {
       const r = await runtime.deploy(privateState.state.adminKey, privateState);
@@ -108,6 +139,7 @@ export function App() {
   // ── Circuit dispatch ─────────────────────────────────────────────────────
   const callCircuit = useCallback(
     async (name: string, args: any[]) => {
+      if (!runtime) throw new Error('Runtime not ready — Compact contract failed to load.');
       if (!privateState) throw new Error('No private state — generate authority or candidate first.');
       const t0 = performance.now();
       try {
@@ -191,6 +223,24 @@ export function App() {
           <NavLink active={tab==='source'}    onClick={() => setTab('source')}    icon={<FileCheck2/>}>Contract</NavLink>
         </nav>
       </header>
+
+      {!runtime && !privateState && (
+        <section className="glass-card" style={{ marginTop: 20 }}>
+          <p style={{ color: 'var(--text-muted)' }}>
+            🌑 Loading Midnight Compact runtime…
+            <br/>
+            <span style={{ fontSize: '0.8rem' }}>
+              If this message persists, the WASM runtime failed to load (browser cache, CSP, or CDN issue).
+              Try opening DevTools → Network and reloading.
+            </span>
+          </p>
+          {runtimeError && (
+            <p style={{ color: 'var(--accent-warning)', fontSize: '0.85rem', marginTop: 8 }}>
+              Runtime error: {runtimeError}
+            </p>
+          )}
+        </section>
+      )}
 
       {!privateState && (
         <section className="glass-card" style={{ marginTop: 20 }}>
