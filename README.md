@@ -1,8 +1,6 @@
 # 🛡️ NightHire — Privacy-Preserving Progressive Disclosure Hiring Protocol
 
 **🌑 Live demo:** [night-hire-maryjanes-projects-288d9e41.vercel.app](https://night-hire-maryjanes-projects-288d9e41.vercel.app)
-**🎥 Wave 3 demo video:** *(recorded per `DEMO-VIDEO-SCRIPT.md` — URL is added here the moment the upload completes; judges who can't run the demo can press play instead)*
-**📦 Wave-3 diff vs Wave-2:** [`WAVE-3-CHANGELOG.md`](./WAVE-3-CHANGELOG.md)
 
 <p align="center">
   <img src="./assets/banner.png" alt="NightHire Banner" width="100%" />
@@ -110,9 +108,9 @@ Both contracts compile with `compactc 0.31.1 / language 0.23.0 / runtime 0.16.0`
 
 ---
 
-## ✅ Wave 2 — what we shipped (the durable contract layer)
+## ✅ Wave 2 — what we shipped
 
-NightHire's Wave 2 deliverable is the contract + frontend wiring that makes the privacy story executable. Every artefact below is in this repository and verifiable without a funded testnet wallet.
+NightHire's contract + frontend wiring that makes the privacy story executable. Every artefact below is in this repository and verifiable without a funded testnet wallet.
 
 ### Two Compact contracts · 14 ZK-provable circuits · 100% `proof:true`
 
@@ -121,9 +119,9 @@ NightHire's Wave 2 deliverable is the contract + frontend wiring that makes the 
 | `nighthire.compact` (9) | `register`, `issueCredential`, `submitRating`, `proveMinRating`, `proveMinJobs`, `proveRegistered`, `proveCredential`, `proveSalaryFits`, `proveJurisdiction` | `authority`, `candidateCount`, `totalRatings`, `ratingSum`, `completedJobs`, `sequence`, `credentialAttestations: Map<Bytes<32>, Bytes<32>>` | `localAuthorityKey`, `localSecretKey`, `localRating`, `localCompletedJobs`, `localCredentialId`, `localCredentialSalt`, `localSalaryLower`, `localSalaryUpper`, `localJurisdictionHash` |
 | `escrow.compact` (5) | `openEscrow`, `releaseMilestone`, `refundEscrow`, `proveEmployerLink`, `proveCandidateLink` | `escrowAuthority`, `escrowSequence`, `escrowCount`, per-escrow maps, `activeEscrowByPair` | `localEscrowAuthorityKey`, `localEmployerSecretKey`, `localCandidateSecretKey`, `localMilestoneProof` |
 
-`proof:true` is auditable in `boilerplate/contract/src/managed/nighthire/compiler/contract-info.json` and `…/wave2/managed/escrow/compiler/contract-info.json` (committed in-tree) — Wave 1 was disqualified because three of five advertised ZK circuits had `proof:false`, and we now check the flag in a regression test.
+`proof:true` is auditable in `boilerplate/contract/src/managed/nighthire/compiler/contract-info.json` and `…/wave2/managed/escrow/compiler/contract-info.json` (both committed in-tree) — and is asserted by a regression test that fails the build if any circuit ever drops back to `proof:false`.
 
-### Private-state management (the 40%-Engineering rubric item)
+### Private-state management
 
 - `boilerplate/contract/src/witnesses.ts` is a typed discriminated union: `AuthorityPrivateState { adminKey }` and `CandidatePrivateState { secretKey, rating, completedJobs, credentialId, credentialSalt, salaryLower, salaryUpper, jurisdictionHash }`. Every witness implementation narrows on `privateState.role` and throws on cross-role access.
 - `frontend/src/services/nightHire.ts` mirrors the same shape for browser-side execution. Private state is generated with `crypto.getRandomValues` and persisted in `localStorage` under the namespaced key `nighthire.private-state.v1`.
@@ -141,62 +139,15 @@ NightHire's Wave 2 deliverable is the contract + frontend wiring that makes the 
 | **State-machine replay guard** (`escrowSequence: Counter`) | every `escrow.compact` circuit | Monotonic counter prevents replay; one counter cell, not per-escrow |
 | **Active-pair lock** (`activeEscrowByPair`) | `openEscrow` | An employer can't double-fund the same candidate commitment while a prior escrow is live |
 
-### Test rigour (15% QA rubric)
+### Tests
 
 - `boilerplate/contract-cli/src/test/nighthire.unit.test.ts`: **11 tests pass without Docker.** Includes 6 source-level regression-guard invariants against the Wave 1 bug class (no-op `proveMinRating`/`proveMinJobs`, single-direction salary overlap, single-key `issueCredential`, proof-skip on circuits without ledger writes, `proof:true` flag in `contract-info.json`).
 - `@slow` integration suite (`test/commons.ts`) spins up a Midnight standalone node via Docker and exercises every circuit end-to-end. Reproduce with `npm run test-api` (requires Docker).
 
-### Honest caveats (carried forward from Wave 2)
+### Honest caveats
 
-- **`escrow.compact` is a ledger-only state machine**, not a Zswap-wired DUST movement. This is called out in the in-contract header (`escrow.compact:104-105`), in `plan.md` "Known Limitations", and in `README.md` "Refactor target — Zswap shielded-coin wiring". Wiring Zswap into the existing state machine is the first post-Buildathon item.
-- **Live testnet deployment is not captured in this submission.** The boot script is in `boilerplate/contract-cli/src/api.ts:97` (`WalletBuilder.native()` + `httpClientProofProvider`); capturing a deployment tx hash is on the post-Buildathon roadmap (see Wave 3 plan below).
-
----
-
-## 🎯 Wave 3 — plan for the remaining build window
-
-We are inside the Wave 3 build period (Oct 27 – Nov 16, 2026). The contract substrate is finished; the remaining time is for **submission polish** and **one optional high-risk upgrade**. Below is the actual plan, ordered by what moves judging score.
-
-### Must-do before the Submission Deadline (Nov 16)
-
-| # | Item | Time | Rubric it lifts |
-|---|---|---|---|
-| 1 | **Record the demo video** using `DEMO-VIDEO-SCRIPT.md` (Loom or OBS → MP4 → YouTube unlisted). Embed the URL in the README top + AKINDO submission form. | 1 h | **10% Communication** + closes the demo-video hard-gate item |
-| 2 | **Open the PR** from `wave3/readiness` → `main` on GitHub. Resolve the merge manually (no conflicts expected), or merge directly with `git merge --no-ff wave3/readiness`. AKINDO evaluates the commit at `main` head. | 15 min | Required for AKINDO submission |
-| 3 | **Click through the live demo end-to-end** at `night-hire.vercel.app` after the merge deploys. Confirm the Escrow tab loads and produces a `txId` for `openEscrow` → `releaseMilestone` × 2 → `refundEscrow`. | 15 min | 15% UX & Design |
-| 4 | **Re-record the demo video** if any step in #3 was broken. Judges who can't run the demo themselves rely on this. | 30 min (if needed) | 10% Communication |
-
-### Optional — high-leverage if time permits
-
-| # | Item | Time | Risk | Rubric it lifts |
-|---|---|---|---|---|
-| 5 | **Zswap shielded-coin wiring in `escrow.compact`** — add one new circuit `transferMilestone(escrowId, dest, amount)` that imports the Zswap stdlib and moves real DUST. Existing 5 circuits stay unchanged. Redeploy to testnet. | 1–2 days | **High** — multi-MB keys regenerate, redeploy required, may need wallet funding | 40% Engineering (closes the "ledger-only" honesty note) |
-| 6 | **Deploy `nighthire.compact` + `escrow.compact` to `testnet-02.midnight.network`** and capture the contract address + tx hash in the README. Required wallet seed funded with testnet DUST. | 30 min + faucet wait | Medium — depends on testnet faucet availability | 40% Engineering (real on-chain evidence) |
-| 7 | **Run the `@slow` integration suite** against testnet and commit `reports/wave3-integration.xml` so judges can read it. | 1 h (Docker setup included) | Medium — Docker availability | 15% QA |
-
-### Deferred — to the Wave 4 / post-Buildathon roadmap
-
-These were the aspirational Wave 3 targets in `plan.md` ("Cardano L1 bridge", "ATS plugins", "Anonymous jury dispute resolution"). They are intentionally **not** in this build window:
-
-- Cardano L1 reputation-portability anchor (cross-chain bridge still needs design work + a partner-chain spec).
-- Greenhouse / Lever ATS browser extensions (out of scope; needs a separate enterprise-vendor conversation).
-- Anonymous-jury dispute resolution (needs a new contract + governance model; significant scope).
-- Zswap shielded-coin production hardening (DoS analysis, fee estimation, refund-on-dispute).
-
-### How to know Wave 3 is shippable
-
-Tick every box on this checklist before the AKINDO deadline:
-
-- [ ] Demo video URL is **in the README top banner** *and* in the AKINDO submission form.
-- [ ] `wave3/readiness` PR is merged to `main`; AKINDO has been refreshed against `main` HEAD.
-- [ ] `npm test` passes from a clean checkout (11/11 — note: the `vitest.config.ts` copyright is now NightHire, and the negative-path invariants catch the Wave 1 regression class).
-- [ ] Vercel deployment reflects `main` HEAD and the Escrow tab returns a real `txId` per call.
-- [ ] The pitch deck's slide 9 (rubric-to-artefact table) is accurate.
-- [ ] The Known Limitations section in `plan.md` still reads true (no aspirational claims sneak back in).
-
-That's the plan. Anything outside this list is a stretch goal and gets dropped before deadline.
-
----
+- **`escrow.compact` is a ledger-only state machine**, not a Zswap-wired DUST movement. This is called out in the in-contract header (`escrow.compact:104-105`), in `plan.md` "Known Limitations", and below under "Refactor target — Zswap shielded-coin wiring". Wiring Zswap into the existing state machine is the first post-Buildathon item.
+- **No live testnet deployment is captured in this submission.** The boot script is in `boilerplate/contract-cli/src/api.ts` (`WalletBuilder.native()` + `httpClientProofProvider`); capturing a deployment tx hash is on the post-Buildathon roadmap.
 
 ---
 
