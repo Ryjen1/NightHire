@@ -1,6 +1,6 @@
 # NightHire — Privacy-Preserving Progressive Disclosure Hiring Protocol
 
-**🌑 Live demo:** [night-hire-maryjanes-projects-288d9e41.vercel.app](https://night-hire-maryjanes-projects-288d9e41.vercel.app)
+**🌑 Demo:** *Local-only build. See README → Quickstart to launch at http://localhost:5173/.*
 
 > **Slide deck** — convert this to PDF with `pandoc pitch-deck.md -o pitch-deck.pdf -t beamer` or paste into Google Slides / Figma. Total: 8 slides.
 
@@ -120,7 +120,7 @@ Direction items the team has *not* shipped — kept here so the roadmap is hones
 
 ### Today
 
-- Live demo on Vercel: `night-hire.vercel.app` (Overview, Candidate, Authority, Employer, Escrow, Ledger, Source tabs)
+- Local-only demo: run `npm run dev` and open http://localhost:5173/ (Overview, Candidate, Authority, Employer, Escrow, Ledger, Source tabs all functional end-to-end)
 - 14 ZK circuits across 2 Compact contracts, all `proof:true`; per-circuit prover/verifier pairs committed under `boilerplate/contract/src/managed/.../keys/`
 - 11 tests pass with no Docker; CI runs on every push (`.github/workflows/test.yml`)
 - Apache-2.0 licensed

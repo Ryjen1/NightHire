@@ -1,6 +1,6 @@
 # 🛡️ NightHire — Product Plan & Multi-Wave Roadmap
 
-**🌑 Live demo:** [night-hire-maryjanes-projects-288d9e41.vercel.app](https://night-hire-maryjanes-projects-288d9e41.vercel.app)
+**🌑 Demo:** *No live deployment. Run `npm run dev` after the Quickstart to start the frontend at http://localhost:5173/.*
 
 ## Executive Summary
 

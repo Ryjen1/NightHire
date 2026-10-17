@@ -35,3 +35,7 @@ coverage/
 boilerplate/contract-cli/reports/
 boilerplate/contract-cli/dist/
 boilerplate/contract/dist/
+
+# Vercel CLI linking state (do not share per https://vercel.link/project-config)
+.vercel/
+frontend/.vercel/
