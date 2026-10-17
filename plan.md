@@ -84,34 +84,9 @@ Bumped `@midnight-ntwrk/compact-runtime` from `^0.8.1` to `0.16.0` so the compil
 
 ---
 
-## 🌐 Wave 3 — Shipped status (Nov submission)
+## Future work
 
-Honest status table; see `WAVE-3-CHANGELOG.md` for the per-criterion diff.
-
-| Roadmap target | Status | Where it lives |
-|---|---|---|
-| Real ZK circuits (`proof: true`) | ✅ shipped (was already Wave 2) | `boilerplate/contract/src/{nighthire.compact,wave2/escrow.compact}` |
-| Substantive nightly unit + negative-path tests | ✅ shipped | `boilerplate/contract-cli/src/test/nighthire.unit.test.ts` |
-| End-to-end Escrow tab in the live demo | ✅ shipped (was broken in Wave 2) | `scripts/vendor-frontend.mjs` rewrite + `frontend/src/App.tsx` Escrow tab |
-| CI workflow | ✅ shipped | `.github/workflows/test.yml` |
-| Documented architecture / privacy diagram | ✅ shipped | README "Dual-Ledger Architecture" section |
-| Live testnet deployment | ⏳ **deferred to post-Buildathon** — see [Known Limitations](#⏸-known-limitations--limitations) below |
-| Cardano L1 bridge (reputation anchor) | ⏳ deferred to post-Buildathon — design doc kept for Wave 4 |
-| ATS browser-extension integrations | ⏳ deferred to post-Buildathon |
-| Anonymous-jury dispute resolution | ⏳ deferred to post-Buildathon |
-
-### ⏸ Known limitations / Limitations
-
-- **No live testnet deployment captured in this submission.** Wave 3 prioritised shipping the dual-ledger contract lineage, the live-working Escrow tab, and the test rigour that judges look for over capturing a deployment tx hash on `testnet-02.midnight.network` within the build window. The contract suite *compiles to* a testnet deployable artefact; the boot script and WIF are checked in but not exercised live in front of judges. This is the same known limitation flagged in Wave 2; the path to remediate is scripted in `boilerplate/contract-cli/src/api.ts` but requires funded testnet DUST for the deploy call.
-- **`boilerplate/contract-cli/` still imports from a scaffold-shaped directory** (the dir name `contract-cli` is preserved from the Midnight example scaffold for path stability with the upstream tooling). Internally everything is NightHire-flavored; the scaffold origin is contained, no Midnight Foundation code is shipped.
-- **Zswap shielded-coin value movement is not wired** in `escrow.compact`. The escrow is a ledger-only state machine (per the in-contract honesty note `escrow.compact:104-105`). Moving real DUST through Zswap is the next milestone; the design and witness shape leave room for it without a contract redeploy.
-
----
-
-## 🌐 Wave 3 — Original roadmap (for reference, kept post-deadline)
-
-### 1. Cardano L1 + Midnight L2 Dual-Ledger Settlement
-- Cross-Chain Escrow Settlement via partner chains.
+### 1. Cardano L1 + Midnight L2 cross-ecosystem reputation
 - State Relay Bridge: verify Midnight ZK state proofs on Cardano L1 for cross-chain reputation portability.
 
 ### 2. Enterprise ATS Integration Plugins
@@ -121,8 +96,19 @@ Honest status table; see `WAVE-3-CHANGELOG.md` for the per-criterion diff.
 - Anonymous Nullifier-Based Voting among verified peers for escrow disputes.
 - Zero-Knowledge Soulbound Credentials (ZK-SBCs) — non-transferable, privacy-preserving reputation tokens.
 
+### 4. Zswap shielded-coin value movement
+- The escrow contract is currently a ledger-only state machine (see "Known limitations" below). Wiring Zswap shielded-coin movement into the existing state machine is a contained change (one new circuit) without a contract redeploy.
+
+---
+
+## Known limitations
+
+- **No live testnet deployment captured in this repository.** The contract suite compiles to a deployable artefact and the boot script is in `boilerplate/contract-cli/src/api.ts` (`WalletBuilder.native()` + `httpClientProofProvider`); it requires funded testnet DUST for the deploy call.
+- **`boilerplate/contract-cli/` directory name is preserved** from the Midnight example scaffold (for path stability with the upstream tooling). Internally everything is NightHire-flavored; no Midnight Foundation code is shipped.
+- **Zswap shielded-coin value movement is not wired** in `escrow.compact`. The escrow is a ledger-only state machine (per the in-contract honesty note `escrow.compact:104-105`).
+
 ---
 
 <p align="center">
-  <b>NightHire Protocol</b> • Built on Midnight Network • Wave 1 MVP shipped • Wave 2 ZK + escrow shipped
+  <b>NightHire Protocol</b> • Built on Midnight Network
 </p>
