@@ -44,3 +44,4 @@ boilerplate/contract-cli/src/enhanced-api.ts
 # Vercel CLI linking state (do not share per https://vercel.link/project-config)
 .vercel/
 frontend/.vercel/
+.vercel

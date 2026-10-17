@@ -1,6 +1,6 @@
 # NightHire — Privacy-Preserving Progressive Disclosure Hiring Protocol
 
-**🌑 Demo:** *Local-only build. See README → Quickstart to launch at http://localhost:5173/.*
+**🌑 Live demo:** [night-hire-pied.vercel.app](https://night-hire-pied.vercel.app/)
 
 > **Slide deck** — convert this to PDF with `pandoc pitch-deck.md -o pitch-deck.pdf -t beamer` or paste into Google Slides / Figma. Total: 8 slides.
 

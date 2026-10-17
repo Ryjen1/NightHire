@@ -1,6 +1,6 @@
 # 🛡️ NightHire — Privacy-Preserving Progressive Disclosure Hiring Protocol
 
-**🌑 Live demo:** [night-hire-maryjanes-projects-288d9e41.vercel.app](https://night-hire-maryjanes-projects-288d9e41.vercel.app)
+**🌑 Live demo:** [night-hire-pied.vercel.app](https://night-hire-pied.vercel.app/)
 
 <p align="center">
   <img src="./assets/banner.png" alt="NightHire Banner" width="100%" />
@@ -39,7 +39,7 @@ npm run vendor                        # stage compiled contracts into the fronte
 ```
 
 Try the live build first:
-**[night-hire-maryjanes-projects-288d9e41.vercel.app](https://night-hire-maryjanes-projects-288d9e41.vercel.app)** — Overview, Candidate, Authority, Employer, Escrow, Ledger, Source tabs.
+**[night-hire-pied.vercel.app](https://night-hire-pied.vercel.app/)** — Overview, Candidate, Authority, Employer, Escrow, Ledger, Source tabs.
 
 Or run it locally with [Quickstart](#-quickstart).
 
