@@ -7,13 +7,13 @@
   "workspaces": [
     "boilerplate/contract",
     "boilerplate/contract-cli",
-    "boilerplate/scripts",
     "frontend"
   ],
   "scripts": {
-    "dev": "rm -rf boilerplate/contract/src/managed/* && node boilerplate/scripts/auto-generator.js",
-    "build": "npm run build --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "compile:contract": "cd boilerplate/contract && npm run compact && cd ../contract/src/wave2 && COMPACT_VERSION=0.31.1 ../../node_modules/.bin/compactc escrow.compact managed/escrow && ../../node_modules/.bin/zkir compile-many managed/escrow/zkir managed/escrow/keys && cd ../../../..",
+    "dev": "npm run vendor && (cd frontend && npm run dev)",
+    "build": "cd frontend && npm run build",
+    "test": "cd boilerplate/contract-cli && npm test",
     "vendor": "node scripts/vendor-frontend.mjs",
     "docs": "open https://docs.midnight.network/develop/reference/compact/"
   },

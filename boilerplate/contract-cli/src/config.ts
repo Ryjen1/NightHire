@@ -33,7 +33,7 @@ function detectContractPath(): string {
   // Verify the managed directory exists
   if (!fs.existsSync(expectedManagedPath)) {
     console.log(`⚠️  Config: Managed directory not found: ${expectedManagedPath}`);
-    console.log(`💡 You may need to run: npm run auto-generate`);
+    console.log(`💡 Run \`npm run compact\` in boilerplate/contract to regenerate artefacts.`);
     // Return path anyway so it can be created
   }
   

@@ -128,7 +128,7 @@ nighthire/
 ├── assets/                          # Branding (logo, banner, architecture diagram)
 ├── LICENSE                          # Apache-2.0
 ├── README.md
-├── nighthire.compact                # Mirrored root copy used by the auto-generator
+├── nighthire.compact                # Mirrored root copy used to compile into contract/src
 ├── boilerplate/
 │   ├── contract/                    # @midnight-ntwrk/contract workspace
 │   │   └── src/
