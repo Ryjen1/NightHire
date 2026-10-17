@@ -1,0 +1,16 @@
+{
+  "projectId": "prj_FLiR8xHWlmDseq3u9jvYfDL0RYnK",
+  "orgId": "team_JLwO3MphqO2sAcNeceqRDsvP",
+  "projectName": "night-hire",
+  "settings": {
+    "createdAt": 1787815280300,
+    "framework": "vite",
+    "devCommand": null,
+    "installCommand": null,
+    "buildCommand": null,
+    "outputDirectory": null,
+    "rootDirectory": null,
+    "directoryListing": false,
+    "nodeVersion": "24.x"
+  }
+}

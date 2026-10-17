@@ -33,7 +33,12 @@ import {
   bytesToHex,
   hexToBytes,
   loadNightHireRuntime,
+  loadEscrowRuntime,
   NightHireRuntime,
+  EscrowRuntime,
+  type EscrowPrivateState,
+  newEscrowAuthorityState,
+  saveEscrowState,
   type NightHirePrivateState,
   type AuthorityPrivateState,
   type CandidatePrivateState,
@@ -61,8 +66,10 @@ const isCandidate = (p: NightHirePrivateState | null): p is { role: 'candidate';
 export function App() {
   const [tab, setTab] = useState<Tab>('overview');
   const [runtime, setRuntime] = useState<NightHireRuntime | null>(null);
+  const [escrowRuntime, setEscrowRuntime] = useState<EscrowRuntime | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [deployed, setDeployed] = useState(false);
+  const [escrowDeployed, setEscrowDeployed] = useState(false);
   void runtimeError;
   const [ledger, setLedger] = useState<any>(() => ({
     authority: '0'.repeat(64),
@@ -74,8 +81,9 @@ export function App() {
     credentialAttestations: {},
     member: () => false,
   }));
+  const [escrowLedger, setEscrowLedger] = useState<any>({ escrowSequence: '0', escrowCount: '0', escrowAuthority: '0'.repeat(64), escrows: [] });
 
-  // Lazily load the Compact runtime in the browser. This way, even if the
+  // Lazily load the Compact runtimes. This way, even if the
   // WASM fails to initialize (CSP, network, etc.) the React UI still mounts.
   useEffect(() => {
     (async () => {
@@ -86,6 +94,12 @@ export function App() {
           return;
         }
         setRuntime(new NightHireRuntime(Contract, ledger));
+        const escrow = await loadEscrowRuntime();
+        if (escrow?.ready && escrow.Contract) {
+          setEscrowRuntime(new EscrowRuntime(escrow.Contract, escrow.ledger));
+        } else if (escrow?.error) {
+          console.warn('Escrow contract module did not load:', escrow.error);
+        }
       } catch (e: any) {
         setRuntimeError(e?.message || String(e));
       }
@@ -93,17 +107,21 @@ export function App() {
   }, []);
 
   const [privateState, setPrivateState] = useState<NightHirePrivateState | null>(() => loadPrivateState());
+  const [escrowState, setEscrowState] = useState<EscrowPrivateState | null>(null);
   const [logs, setLogs] = useState<CircuitLog[]>([]);
 
-  // Refresh ledger display whenever a circuit returns.
+  // Refresh nighthire ledger display whenever a circuit returns.
   const appendLog = useCallback((log: CircuitLog) => {
     setLogs((prev) => [log, ...prev].slice(0, 30));
   }, []);
 
-  // Re-read the ledger from the runtime (cheap; in-memory copy).
   const refreshLedger = useCallback(() => {
     if (runtime) setLedger(runtime.ledger());
   }, [runtime]);
+
+  const refreshEscrowLedger = useCallback(() => {
+    if (escrowRuntime) setEscrowLedger(escrowRuntime.ledger());
+  }, [escrowRuntime]);
 
   // ── Deploy (constructor) ──────────────────────────────────────────────────
   const handleDeploy = useCallback(async () => {
@@ -112,6 +130,7 @@ export function App() {
     try {
       const r = await runtime.deploy(privateState.state.adminKey, privateState);
       setDeployed(true);
+      setEscrowDeployed(true);
       setLedger(r.ledger);
       appendLog({
         id: r.txId,
@@ -122,6 +141,25 @@ export function App() {
         txId: r.txId,
         ok: true,
       });
+      // Deploy the escrow runtime with the same admin key so the Wave-2
+      // escrow tab can call circuits against the same authority identity.
+      if (escrowRuntime) {
+        const es = newEscrowAuthorityState(privateState.state.adminKey);
+        const eState: EscrowPrivateState = { role: 'escrowAuthority', state: es };
+        setEscrowState(eState);
+        saveEscrowState(eState);
+        const er = await escrowRuntime.deploy(privateState.state.adminKey, eState);
+        setEscrowLedger(er.ledger);
+        appendLog({
+          id: er.txId,
+          circuit: 'escrow.constructor(adminKey)',
+          args: [bytesToHex(privateState.state.adminKey).slice(0, 12) + '…'],
+          result: bytesToHex(er.result),
+          durationMs: er.durationMs,
+          txId: er.txId,
+          ok: true,
+        });
+      }
     } catch (e) {
       appendLog({
         id: crypto.randomUUID(),
@@ -134,9 +172,9 @@ export function App() {
         error: (e as Error).message,
       });
     }
-  }, [privateState, runtime, appendLog]);
+  }, [privateState, runtime, escrowRuntime, appendLog]);
 
-  // ── Circuit dispatch ─────────────────────────────────────────────────────
+  // ── Circuit dispatch (nighthire) ──────────────────────────────────────────
   const callCircuit = useCallback(
     async (name: string, args: any[]) => {
       if (!runtime) throw new Error('Runtime not ready — Compact contract failed to load.');
@@ -172,6 +210,92 @@ export function App() {
       }
     },
     [privateState, runtime, refreshLedger, appendLog]
+  );
+
+  // ── Circuit dispatch (escrow) ─────────────────────────────────────────────
+  // Mirrors callCircuit but routes through the EscrowRuntime. The escrow tab
+  // calls this with a `milestoneIndex` hint that we set on the escrow state
+  // before invoking releaseMilestone (the localMilestoneProof witness reads it).
+  const callEscrowCircuit = useCallback(
+    async (
+      name: 'openEscrow' | 'releaseMilestone' | 'refundEscrow' | 'proveEmployerLink' | 'proveCandidateLink',
+      args: any[],
+      options?: { milestoneIndex?: bigint },
+    ) => {
+      if (!escrowRuntime) throw new Error('Escrow runtime not ready —contract failed to load.');
+      if (!escrowState) throw new Error('Escrow private state not initialised — deploy first.');
+      if (options?.milestoneIndex !== undefined) {
+        // The EscrowAuthorityPrivateState shape is readonly-by-discriminated-
+        // union, but the UI needs to bump milestoneIndex each release. We
+        // clone to a fresh state object so the type contract holds.
+        const next = {
+          ...escrowState,
+          state: { ...escrowState.state, milestoneIndex: options.milestoneIndex },
+        };
+        setEscrowState(next);
+        saveEscrowState(next);
+        const t0 = performance.now();
+        try {
+          const r = await escrowRuntime.call(name, args, next);
+          refreshEscrowLedger();
+          appendLog({
+            id: r.txId,
+            circuit: `escrow.${name}`,
+            args: args.map(a => (a instanceof Uint8Array ? bytesToHex(a).slice(0, 10) + '…' : String(a))),
+            result: typeof r.result === 'bigint' ? r.result.toString() : r.result,
+            durationMs: r.durationMs,
+            txId: r.txId,
+            ok: true,
+          });
+          confetti({ particleCount: 30, spread: 50, origin: { y: 0.7 } });
+          return r;
+        } catch (e) {
+          const err = (e as Error).message;
+          appendLog({
+            id: crypto.randomUUID(),
+            circuit: `escrow.${name}`,
+            args: args.map(a => (a instanceof Uint8Array ? bytesToHex(a).slice(0, 10) + '…' : String(a))),
+            result: null,
+            durationMs: performance.now() - t0,
+            txId: '0'.repeat(64),
+            ok: false,
+            error: err,
+          });
+          throw e;
+        }
+      }
+      // No milestone bump — direct call path.
+      const t0 = performance.now();
+      try {
+        const r = await escrowRuntime.call(name, args, escrowState);
+        refreshEscrowLedger();
+        appendLog({
+          id: r.txId,
+          circuit: `escrow.${name}`,
+          args: args.map(a => (a instanceof Uint8Array ? bytesToHex(a).slice(0, 10) + '…' : String(a))),
+          result: typeof r.result === 'bigint' ? r.result.toString() : r.result,
+          durationMs: r.durationMs,
+          txId: r.txId,
+          ok: true,
+        });
+        confetti({ particleCount: 30, spread: 50, origin: { y: 0.7 } });
+        return r;
+      } catch (e) {
+        const err = (e as Error).message;
+        appendLog({
+          id: crypto.randomUUID(),
+          circuit: `escrow.${name}`,
+          args: args.map(a => (a instanceof Uint8Array ? bytesToHex(a).slice(0, 10) + '…' : String(a))),
+          result: null,
+          durationMs: performance.now() - t0,
+          txId: '0'.repeat(64),
+          ok: false,
+          error: err,
+        });
+        throw e;
+      }
+    },
+    [escrowRuntime, escrowState, refreshEscrowLedger, appendLog],
   );
 
   // ── State management helpers ──────────────────────────────────────────────
@@ -321,7 +445,17 @@ export function App() {
       {tab === 'employer' && <EmployerScreen deployed={deployed} ledger={ledger} onCall={callCircuit} ps={privateState} />}
 
       {/* TAB: ESCROW */}
-      {tab === 'escrow' && <EscrowScreen deployed={deployed} ps={privateState} onCall={callCircuit} />}
+      {tab === 'escrow' && (
+        <EscrowScreen
+          deployed={deployed && escrowDeployed}
+          ps={privateState}
+          onOpen={(args) => callEscrowCircuit('openEscrow', args)}
+          onRelease={(args, milestoneIndex) =>
+            callEscrowCircuit('releaseMilestone', args, { milestoneIndex })
+          }
+          escrowLedger={escrowLedger}
+        />
+      )}
 
       {/* TAB: LEDGER */}
       {tab === 'ledger' && <LedgerScreen ledger={ledger} logs={logs} onRefresh={refreshLedger} />}
@@ -662,38 +796,65 @@ function EmployerScreen({ deployed, ledger, onCall, ps }: { deployed: boolean; l
 
 // ─── ESCROW ─────────────────────────────────────────────────────────────────
 
-function EscrowScreen({ deployed, ps, onCall }: { deployed: boolean; ps: NightHirePrivateState | null; onCall: (n: string, a: any[]) => Promise<any> }) {
-  const [employerCommitment, setEmployerCommitment] = useState('');
-  const [candidateCommitment, setCandidateCommitment] = useState('');
+function EscrowScreen({
+  deployed,
+  ps,
+  onOpen,
+  onRelease,
+  escrowLedger,
+}: {
+  deployed: boolean;
+  ps: NightHirePrivateState | null;
+  onOpen: (args: [Uint8Array, Uint8Array, bigint, bigint]) => Promise<any>;
+  onRelease: (args: [bigint, bigint], milestoneIndex: bigint) => Promise<any>;
+  escrowLedger: { escrowSequence: string; escrowCount: string; escrowAuthority: string; escrows: { id: string; amount: string; released: string; milestones: string; state: number }[] };
+}) {
+  const [employerCommitment, setEmployerCommitment] = useState('0x' + '11'.repeat(32));
+  const [candidateCommitment, setCandidateCommitment] = useState('0x' + '22'.repeat(32));
   const [amount, setAmount] = useState(1000n);
   const [milestones, setMilestones] = useState(4n);
   const [escrowId, setEscrowId] = useState<bigint | null>(null);
+  const [releasedCount, setReleasedCount] = useState(0n);
+  const [error, setError] = useState<string | null>(null);
+
+  const activeEscrow = escrowId !== null
+    ? escrowLedger.escrows.find((e) => e.id === escrowId!.toString())
+    : null;
 
   if (!ps) return <p style={{ color: 'var(--text-muted)' }}>Choose a role to use the escrow screen.</p>;
 
   return (
     <section className="grid-2" style={{ marginTop: 20 }}>
       <div className="glass-card">
-        <h2 className="card-title"><Briefcase/> Open escrow (Wave-2)</h2>
+        <h2 className="card-title"><Briefcase/> Open escrow</h2>
         <p className="card-subtitle">
-          Employer locks funds to milestone releases. The candidate proves milestone index privately; only releases happen on-chain.
+          Authority locks funds to milestone releases. The candidate proves milestone index privately; only the release count and final state are observable.
         </p>
         <label>Employer commitment: <input value={employerCommitment} onChange={(e) => setEmployerCommitment(e.target.value)} style={{ width: 380, padding: '4px 8px', borderRadius: 6, background: '#0e0e1a', color: '#eee', border: '1px solid var(--border-active)', fontFamily: 'monospace', fontSize: '0.85rem' }} /></label>
         <label>Candidate commitment: <input value={candidateCommitment} onChange={(e) => setCandidateCommitment(e.target.value)} style={{ width: 380, padding: '4px 8px', borderRadius: 6, background: '#0e0e1a', color: '#eee', border: '1px solid var(--border-active)', fontFamily: 'monospace', fontSize: '0.85rem' }} /></label>
         <label>Amount: <input type="number" value={Number(amount)} onChange={(e) => setAmount(BigInt(e.target.value))} style={{ width: 120, padding: '4px 8px', borderRadius: 6, background: '#0e0e1a', color: '#eee', border: '1px solid var(--border-active)' }}/></label>
-        <label>Milestones: <input type="number" min={1} value={Number(milestones)} onChange={(e) => setMilestones(BigInt(e.target.value))} style={{ width: 80, padding: '4px 8px', borderRadius: 6, background: '#0e0e1a', color: '#eee', border: '1px solid var(--border-active)', marginLeft: 8 }}/></label>
+        <label>Milestones: <input type="number" min={1} value={Number(milestones)} onChange={(e) => setMilestones(BigInt(e.target.value))} style={{ width: 80, padding: '4px 8px', borderRadius: 6, background: '#0e0e1a', color: '#eee', border: '1px solid var(--border-active)', marginLeft: 8 }} /></label>
         <div style={{ marginTop: 8 }}>
           <button className="btn btn-primary" disabled={!deployed || ps.role !== 'authority' || !employerCommitment.startsWith('0x') || !candidateCommitment.startsWith('0x')} onClick={async () => {
+            setError(null);
             try {
-              const r = await onCall('openEscrow', [hexToBytes(employerCommitment.slice(2)), hexToBytes(candidateCommitment.slice(2)), amount, milestones]);
-              setEscrowId(r.result);
-            } catch { /* logged */ }
+              const r = await onOpen([hexToBytes(employerCommitment.slice(2)), hexToBytes(candidateCommitment.slice(2)), amount, milestones]);
+              setEscrowId(BigInt(r.result));
+              setReleasedCount(0n);
+            } catch (e: any) {
+              setError(e?.message || 'openEscrow failed');
+            }
           }}>
             <Plus size={14}/> openEscrow
           </button>
           {escrowId !== null && (
             <p style={{ color: 'var(--accent-emerald)', marginTop: 8 }}>
               ✓ Escrow opened: <code>#{escrowId.toString()}</code> ({amount.toString()} split into {milestones.toString()} milestones of {(amount / milestones).toString()} each)
+            </p>
+          )}
+          {error && (
+            <p style={{ color: 'var(--accent-warning)', marginTop: 8, fontSize: '0.85rem' }}>
+              {error}
             </p>
           )}
         </div>
@@ -706,17 +867,62 @@ function EscrowScreen({ deployed, ps, onCall }: { deployed: boolean; ps: NightHi
 
       <div className="glass-card">
         <h2 className="card-title"><CheckCircle2/> Release milestone</h2>
-        <p className="card-subtitle">Authority releases the next milestone; candidate's <code>localMilestoneProof</code> witness keeps the index private.</p>
+        <p className="card-subtitle">Authority releases the next milestone. The candidate's <code>localMilestoneProof</code> witness keeps the index inside the proof.</p>
         {escrowId === null ? (
           <p style={{ color: 'var(--text-muted)' }}>Open an escrow first.</p>
         ) : (
           <>
-            <p>Active escrow: <code>#{escrowId.toString()}</code></p>
-            <button className="btn btn-secondary" onClick={() => onCall('releaseMilestone', [escrowId, amount / milestones]).catch(() => {})}>
-              ✓ Release next milestone
+            <p>Active escrow: <code>#{escrowId.toString()}</code> · released <code>{releasedCount.toString()}/{milestones.toString()}</code></p>
+            <button
+              className="btn btn-secondary"
+              disabled={releasedCount >= milestones}
+              onClick={async () => {
+                setError(null);
+                const next = releasedCount + 1n;
+                try {
+                  await onRelease([escrowId, amount / milestones], next);
+                  setReleasedCount(next);
+                } catch (e: any) {
+                  setError(e?.message || 'releaseMilestone failed');
+                }
+              }}
+            >
+              ✓ Release milestone {releasedCount + 1n === milestones ? '(final)' : `#${(releasedCount + 1n).toString()}`}
             </button>
+            {activeEscrow && activeEscrow.state === 1 && (
+              <p style={{ color: 'var(--accent-emerald)', marginTop: 8 }}>
+                ✓ All milestones released — escrow closed.
+              </p>
+            )}
           </>
         )}
+      </div>
+
+      <div className="glass-card" style={{ gridColumn: '1 / -1' }}>
+        <h2 className="card-title"><Database/> Escrow ledger</h2>
+        <p className="card-subtitle">Public escrow state — authority hash, sequence, count, and per-escrow rows.</p>
+        <div className="grid-3" style={{ marginTop: 12 }}>
+          <div className="stat-pill"><div className="stat-value">{escrowLedger.escrowSequence}</div><div className="stat-label">escrowSequence</div></div>
+          <div className="stat-pill"><div className="stat-value">{escrowLedger.escrowCount}</div><div className="stat-label">escrowCount</div></div>
+          <div className="stat-pill"><div className="stat-value" style={{ fontSize: '0.7rem', wordBreak: 'break-all' }}>0x{escrowLedger.escrowAuthority.slice(0, 16)}…</div><div className="stat-label">escrowAuthority</div></div>
+        </div>
+        <table className="privacy-table" style={{ marginTop: 16 }}>
+          <thead><tr><th>id</th><th>amount</th><th>released</th><th>milestones</th><th>state</th></tr></thead>
+          <tbody>
+            {escrowLedger.escrows.map((e) => (
+              <tr key={e.id}>
+                <td><code>#{e.id}</code></td>
+                <td><code>{e.amount}</code></td>
+                <td><code>{e.released}</code></td>
+                <td><code>{e.milestones}</code></td>
+                <td>{e.state === 0 ? 'open' : e.state === 1 ? 'released-all' : 'refunded'}</td>
+              </tr>
+            ))}
+            {escrowLedger.escrows.length === 0 && (
+              <tr><td colSpan={5} style={{ color: 'var(--text-muted)' }}>No escrows yet.</td></tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </section>
   );

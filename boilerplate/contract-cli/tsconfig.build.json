@@ -1,5 +1,9 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["src/**/*.test.ts"],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/api.ts",
+    "src/test/commons.ts"
+  ],
   "compilerOptions": {}
 }

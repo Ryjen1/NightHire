@@ -1,6 +1,6 @@
 {
   "name": "nighthire",
-  "description": "A Midnight smart contract project: nighthire",
+  "description": "Privacy-first progressive-disclosure hiring protocol on Midnight",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,19 +12,10 @@
   ],
   "scripts": {
     "dev": "rm -rf boilerplate/contract/src/managed/* && node boilerplate/scripts/auto-generator.js",
-    "auto-generate-verbose": "node boilerplate/scripts/typescript-auto-generator.js --verbose",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "vendor": "node scripts/vendor-frontend.mjs",
-    "deploy-hosting": "node scripts/deploy.mjs vercel",
-    "wallet": "node boilerplate/scripts/generate-key.js",
-    "faucet": "node boilerplate/scripts/request-faucet.js",
-    "balance": "node boilerplate/scripts/check-balance.js",
-    "deploy": "node boilerplate/scripts/deploy.js --new",
-    "deploy:new": "node boilerplate/scripts/deploy.js --new",
-    "deploy:join": "node boilerplate/scripts/deploy.js --join",
-    "docs": "open https://docs.midnight.network/develop/reference/compact/",
-    "check": "node -e \"console.log('✅ Scaffold-midnight is ready!'); console.log('💡 Create a .compact file and run: npm run dev'); process.exit(0)\""
+    "docs": "open https://docs.midnight.network/develop/reference/compact/"
   },
   "devDependencies": {
     "@eslint/js": "^9.28.0",
